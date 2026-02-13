@@ -1,8 +1,9 @@
 # SpringBoot Controller Counter
+I created this to count the number of SpringBoot controllers across GitHub repositories using a file list.  I did this 
+to create a report for a client so that we could identify how much API test debt was present in their codebase.
+Currently this just counts the number of controllers.  It doesn't identify which controllers are tested.
 
-Two approaches to count SpringBoot controllers across GitHub repositories using a file list:
-
-## Option 1: GitHub Code Search API (Recommended)
+## Option 1: GitHub Code Search API
 **File:** `count_spring_controllers.py`
 
 ✅ Fast - no cloning needed
@@ -10,22 +11,7 @@ Two approaches to count SpringBoot controllers across GitHub repositories using 
 ⚠️ Rate limited (10 searches/minute)
 ⚠️ May miss some results in very large repos
 
-## Option 2: Clone and Search
-**File:** `count_spring_controllers_clone.py`
-
-✅ More accurate
-✅ Works with private repos
-⚠️ Slower - clones each repo
-⚠️ Requires disk space
-
-## Setup
-
-1. **Install dependencies:**
-```bash
-pip install requests
-```
-
-2. **Create a GitHub Personal Access Token:**
+1. **Create a GitHub Personal Access Token:**
    - Go to: https://github.com/settings/tokens
    - Generate new token (classic)
    - Select scopes:
@@ -33,11 +19,12 @@ pip install requests
      - `read:org` (to list organization repos)
    - Copy the token
 
-3. **Configure the script:**
+2. **Configure the script:**
    Edit the script and replace:
    - `GITHUB_TOKEN = "your_github_token_here"` with your token
 
-4. **Create a repos list file:**
+3. **Create a repos list file:**
+   
    Create a text file (e.g., `repos.txt`) with one repository per line:
    ```
    # Comments are allowed
@@ -48,17 +35,14 @@ pip install requests
    # You can organize with blank lines
    mycompany/inventory-service
    ```
-   
-   See `repos.txt` for an example template.
+   Notice this isn't the url used for cloning. It's just a list of repos to search.
+   See [repos.txt](repos.txt) for an example template.
 
 ## Usage
 
 ```bash
 # Option 1: API search (faster)
 python count_spring_controllers.py repos.txt
-
-# Option 2: Clone and search (more accurate)
-python count_spring_controllers_clone.py repos.txt
 ```
 
 ## What it counts
