@@ -5,13 +5,14 @@ them to stdout in `owner/repo` format (one per line). This output is intended to
 
 # Inputs
 ## Environment Variables
-- `GITHUB_TOKEN` (required for private repos; recommended always to avoid rate limits)
+Without a token, only public repos may be returned and rate limits may apply.
+- `GITHUB_TOKEN`
 
 ### CLI Arguments
 CLI will use positional arguments and an optional `--filter` argument.
 1. `API_BASE_URL`: Base GitHub REST API URL
-   - example for GitHub.com: `api.github.com`
-   - example for GitHub Enterprise: `github.<company>.com/api/v3`
+   - example for GitHub.com: `https://api.github.com`
+   - example for GitHub Enterprise: `https://github.<company>.com/api/v3`
 2. `ORG`: Organization name (login), e.g. `mycompany`
 
 Optional:
@@ -49,6 +50,10 @@ Use whatever is available in the python environment.
 please test against the following github organizations:
 | Input                                                            | Expect        |
 | ---------------------------------------------------------------- | ----------    |
-| api.github.com lancerkind                                        | > 40 repos    |
-| api.github.com HAWS-Product-Team                                 | >= 2 repos    | 
-| api.github.com HAWS-Product-Team --filter "Application"          | >= 1 repo     |
+| https://api.github.com lancerkind                                  | > 40 repos    |
+| https://api.github.com HAWS-Product-Team                           | >= 2 repos    | 
+| https://api.github.com HAWS-Product-Team --filter "Application"    | >= 1 repo     |
+
+Test that usage shows the below:
+   Usage:
+     python repo_list.py <API_BASE_URL> <ORG> [--filter <substring>]
