@@ -1,3 +1,6 @@
+# Story 2
+Status: Implemented
+
 # Repo_List
 Generate a Python module with a `main()` CLI that lists repositories (public + private) for a GitHub organization and prints
 them to stdout in `owner/repo` format (one per line). This output is intended to be redirected into `repos.txt` for
