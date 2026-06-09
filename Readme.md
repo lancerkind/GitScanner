@@ -1,7 +1,18 @@
 # SpringBoot Controller Counter 
 I created this to count the number of SpringBoot controllers across GitHub repositories using a file list.  I did this 
 to create a report for a client so that we could identify how much API test debt was present in their codebase.
-Currently this just counts the number of controllers.  It doesn't identify which controllers are tested.
+Presently, this just counts the number of controllers.  It doesn't identify which controllers are tested.
+
+# Using repo_list
+lists repositories which can be used to create a file list for counting SpringBoot controllers.
+
+
+# Using count_spring_controllers
+Point at a GitHub ***API*** URL and its organization.
+
+Run the following to get usage:
+`python repo_list.py`
+eg: `python repo_list.py http://api.github.com anthropics`
 
 ## Option 1: GitHub Code Search API
 **File:** `count_spring_controllers.py`
