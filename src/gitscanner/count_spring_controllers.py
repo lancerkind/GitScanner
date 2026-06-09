@@ -7,20 +7,35 @@ Useful for private repos or when code search API is limited.
 import argparse
 import os
 import subprocess
-import tempfile
 import sys
+import tempfile
 from pathlib import Path
 
 import requests
+
+
+def build_provider_token(provider, token=None):
+    if token is not None:
+        return token
+    if provider == "gitlab":
+        return os.environ.get("GITLAB_TOKEN")
+    return os.environ.get("GITHUB_TOKEN")
 
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Count Spring controller files by cloning repositories from a list.",
         usage="python count_spring_controllers.py <repos_file>",
+        epilog="Environment variables: GITHUB_TOKEN (github), GITLAB_TOKEN (gitlab).",
     )
     parser.add_argument(
         "repos_file",
         help="Text file containing one repository per line in owner/repo format",
+    )
+    parser.add_argument(
+        "--provider",
+        choices=("github", "gitlab"),
+        default="github",
+        help="Repository provider for clone/auth behavior (default: github)",
     )
     return parser
 
@@ -34,9 +49,11 @@ def parse_cli_args(argv):
 
 
 def build_github_token(token=None):
-    if token is None:
-        token = os.environ.get("GITHUB_TOKEN")
-    return token
+    return build_provider_token("github", token=token)
+
+
+def build_gitlab_token(token=None):
+    return build_provider_token("gitlab", token=token)
 
 
 def build_github_headers(token=None):
@@ -44,6 +61,14 @@ def build_github_headers(token=None):
     headers = {"Accept": "application/vnd.github.v3+json"}
     if token:
         headers["Authorization"] = f"token {token}"
+    return headers
+
+
+def build_gitlab_headers(token=None):
+    token = build_gitlab_token(token)
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["PRIVATE-TOKEN"] = token
     return headers
 
 
@@ -99,16 +124,22 @@ def count_controllers_in_directory(directory):
     return rest_controllers, controllers
 
 
-def build_clone_url(repo_full_name, token=None):
+def build_clone_url(repo_full_name, provider="github", token=None):
+    if provider == "gitlab":
+        token = build_gitlab_token(token)
+        if token:
+            return f"https://oauth2:{token}@gitlab.com/{repo_full_name}.git"
+        return f"https://gitlab.com/{repo_full_name}.git"
+
     token = build_github_token(token)
     if token:
         return f"https://{token}@github.com/{repo_full_name}.git"
     return f"https://github.com/{repo_full_name}.git"
 
 
-def clone_and_count(repo_full_name, token=None, run=subprocess.run):
+def clone_and_count(repo_full_name, provider="github", token=None, run=subprocess.run):
     """Clone a repo temporarily and count controllers."""
-    clone_url = build_clone_url(repo_full_name, token=token)
+    clone_url = build_clone_url(repo_full_name, provider=provider, token=token)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
@@ -133,13 +164,13 @@ def clone_and_count(repo_full_name, token=None, run=subprocess.run):
             raise RuntimeError(f"Error: {exc}") from exc
 
 
-def process_repositories(repos, token=None, clone_and_count_func=clone_and_count):
+def process_repositories(repos, provider="github", token=None, clone_and_count_func=clone_and_count):
     total_rest_controllers = 0
     total_controllers = 0
     repo_results = []
 
     for repo_name in repos:
-        rest_count, controller_count = clone_and_count_func(repo_name, token=token)
+        rest_count, controller_count = clone_and_count_func(repo_name, provider=provider, token=token)
         total = rest_count + controller_count
 
         if total > 0:
@@ -197,8 +228,12 @@ def main():
         print(f"Loaded {len(repos)} repositories from {args.repos_file}")
         print(f"\nCloning and searching {len(repos)} repositories...\n")
 
-        token = build_github_token()
-        stats = process_repositories(repos, token=token)
+        if args.provider == "gitlab":
+            token = build_gitlab_token()
+        else:
+            token = build_github_token()
+
+        stats = process_repositories(repos, provider=args.provider, token=token)
         for line in format_summary_lines(stats, len(repos)):
             print(line)
     except RuntimeError as exc:

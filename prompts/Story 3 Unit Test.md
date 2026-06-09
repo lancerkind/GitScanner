@@ -16,7 +16,7 @@ This will help maintain the reliability and stability of the repository listing 
 
 # Acceptance criteria
 - the code be executable
-  - For repo_list.py: uv run list_repos <API_BASE_URL> <ORG> [--filter <substring>], python repo_list.py http://api.github.com anthropics 
+  - For repo_list.py: uv run list_repos <API_BASE_URL> <ORG> --privider gitlab, python repo_list.py http://api.github.com anthropics 
   - For count_spring_controllers.py: uv run count_spring_controllers <API_BASE_URL> <ORG> [--filter <substring>], python count_spring_controllers.py repos.txt
 - the unit tests should pass
 - the code coverage should be at least 80%

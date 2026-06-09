@@ -7,6 +7,8 @@ import pytest
 from gitscanner.count_spring_controllers import (
     build_parser,
     build_clone_url,
+    build_gitlab_headers,
+    build_gitlab_token,
     build_github_headers,
     count_controllers_in_directory,
     format_summary_lines,
@@ -27,8 +29,14 @@ class DummyResponse:
 
 
 def test_parse_cli_args_parses_repos_file():
-    args = parse_cli_args(["repos.txt"])
-    assert args.repos_file == "repos.txt"
+    args = parse_cli_args(["github_repos.txt"])
+    assert args.repos_file == "github_repos.txt"
+    assert args.provider == "github"
+
+
+def test_parse_cli_args_parses_provider_option():
+    args = parse_cli_args(["github_repos.txt", "--provider", "gitlab"])
+    assert args.provider == "gitlab"
 
 
 def test_parse_cli_args_no_args_prints_usage_and_exits(capsys):
@@ -38,10 +46,13 @@ def test_parse_cli_args_no_args_prints_usage_and_exits(capsys):
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == build_parser().format_help()
+    assert "--provider" in captured.out
+    assert "GITHUB_TOKEN" in captured.out
+    assert "GITLAB_TOKEN" in captured.out
 
 
 def test_read_repos_from_file_skips_comments_and_empty_lines(tmp_path):
-    repos_file = tmp_path / "repos.txt"
+    repos_file = tmp_path / "github_repos.txt"
     repos_file.write_text("\n# comment\norg/repo-a\n\norg/repo-b\n", encoding="utf-8")
 
     repos = read_repos_from_file(repos_file)
@@ -59,9 +70,27 @@ def test_build_github_headers_with_and_without_token(monkeypatch):
     assert build_github_headers("abc123")["Authorization"] == "token abc123"
 
 
+def test_build_gitlab_token_and_headers(monkeypatch):
+    monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+    assert build_gitlab_token() is None
+    assert build_gitlab_headers() == {"Accept": "application/json"}
+    assert build_gitlab_headers("xyz") == {"Accept": "application/json", "PRIVATE-TOKEN": "xyz"}
+
+
 def test_build_clone_url_uses_token_when_present():
     assert build_clone_url("org/repo", token="tkn") == "https://tkn@github.com/org/repo.git"
     assert build_clone_url("org/repo", token=None) == "https://github.com/org/repo.git"
+
+
+def test_build_clone_url_for_gitlab_uses_oauth2_token_when_present():
+    assert (
+        build_clone_url("group/sub/repo", provider="gitlab", token="gl-token")
+        == "https://oauth2:gl-token@gitlab.com/group/sub/repo.git"
+    )
+    assert (
+        build_clone_url("group/sub/repo", provider="gitlab", token=None)
+        == "https://gitlab.com/group/sub/repo.git"
+    )
 
 
 def test_get_repo_info_returns_payload_on_200():
@@ -110,7 +139,8 @@ def test_count_controllers_in_directory_ignores_unreadable_file(monkeypatch, tmp
 
 
 def test_process_repositories_aggregates_totals_and_filters_zero_repos():
-    def fake_clone_and_count(repo_name, token=None):
+    def fake_clone_and_count(repo_name, provider="github", token=None):
+        assert provider == "gitlab"
         return {
             "org/a": (2, 1),
             "org/b": (0, 0),
@@ -119,6 +149,7 @@ def test_process_repositories_aggregates_totals_and_filters_zero_repos():
 
     stats = process_repositories(
         ["org/a", "org/b", "org/c"],
+        provider="gitlab",
         token="abc",
         clone_and_count_func=fake_clone_and_count,
     )
@@ -153,7 +184,7 @@ def test_clone_and_count_wraps_timeout(monkeypatch):
         raise subprocess.TimeoutExpired(cmd="git clone", timeout=300)
 
     with pytest.raises(RuntimeError, match="Clone timeout"):
-        module.clone_and_count("org/repo", token="abc", run=fake_run)
+        module.clone_and_count("org/repo", provider="gitlab", token="abc", run=fake_run)
 
 
 def test_clone_and_count_wraps_failed_clone():
@@ -163,19 +194,23 @@ def test_clone_and_count_wraps_failed_clone():
         return SimpleNamespace(returncode=1, stderr="fatal: auth failed")
 
     with pytest.raises(RuntimeError, match="Clone failed"):
-        module.clone_and_count("org/repo", token="abc", run=fake_run)
+        module.clone_and_count("org/repo", provider="gitlab", token="abc", run=fake_run)
 
 
 def test_main_success_prints_summary(monkeypatch, capsys):
     from gitscanner import count_spring_controllers as module
 
-    monkeypatch.setattr(module, "parse_cli_args", lambda argv: SimpleNamespace(repos_file="repos.txt"))
+    monkeypatch.setattr(
+        module,
+        "parse_cli_args",
+        lambda argv: SimpleNamespace(repos_file="github_repos.txt", provider="gitlab"),
+    )
     monkeypatch.setattr(module, "read_repos_from_file", lambda path: ["org/repo"])
-    monkeypatch.setattr(module, "build_github_token", lambda token=None: "abc")
+    monkeypatch.setattr(module, "build_gitlab_token", lambda token=None: "abc")
     monkeypatch.setattr(
         module,
         "process_repositories",
-        lambda repos, token=None, clone_and_count_func=None: {
+        lambda repos, provider="github", token=None, clone_and_count_func=None: {
             "total_rest_controllers": 1,
             "total_controllers": 0,
             "total_controller_files": 1,

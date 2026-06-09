@@ -1,59 +1,90 @@
-# SpringBoot Controller Counter 
-I created this to count the number of SpringBoot controllers across GitHub repositories using a file list.  I did this 
-to create a report for a client so that we could identify how much API test debt was present in their codebase.
-Presently, this just counts the number of controllers.  It doesn't identify which controllers are tested.
+# SpringBoot Controller Counter
 
-# Using repo_list
-lists repositories which can be used to create a file list for counting SpringBoot controllers.
+This project helps you:
 
+1. List repositories from GitHub or GitLab.
+2. Clone each repository and count Spring controller files (`@RestController` and `@Controller`).
 
-# Using count_spring_controllers
-Point at a GitHub ***API*** URL and its organization.
+Use `uv run` so commands execute through the project entry points defined in `pyproject.toml`.
 
-Run the following to get usage:
-`python repo_list.py`
-eg: `python repo_list.py http://api.github.com anthropics`
+## Using `list_repos`
 
-## Option 1: GitHub Code Search API
-**File:** `count_spring_controllers.py`
+`list_repos` fetches repositories for an organization/group/user namespace and prints one repo per line.
 
-✅ Fast - no cloning needed
-✅ Works well for public repos
-⚠️ Rate limited (10 searches/minute)
-⚠️ May miss some results in very large repos
-
-1. **Create a GitHub Personal Access Token:**
-   - Go to: https://github.com/settings/tokens
-   - Generate new token (classic)
-   - Select scopes:
-     - `repo` (for private repos)
-     - `read:org` (to list organization repos)
-   - Copy the token
-
-2. **Configure the script:**
-   Edit the script and replace:
-   - `GITHUB_TOKEN = "your_github_token_here"` with your token
-
-3. **Create a repos list file:**
-   
-   Create a text file (e.g., `repos.txt`) with one repository per line:
-   ```
-   # Comments are allowed
-   mycompany/user-service
-   mycompany/payment-service
-   mycompany/order-service
-   
-   # You can organize with blank lines
-   mycompany/inventory-service
-   ```
-   Notice this isn't the url used for cloning. It's just a list of repos to search.
-   See [repos.txt](repos.txt) for an example template.
-
-## Usage
+### Show help
 
 ```bash
-# Option 1: API search (faster)
-python count_spring_controllers.py repos.txt
+uv run list_repos
+```
+
+### GitHub examples
+
+```bash
+# List all accessible repos for an org/user
+uv run list_repos https://api.github.com anthropics
+
+# Filter by repo name substring (case-insensitive)
+uv run list_repos https://api.github.com anthropics --filter spring
+```
+
+### GitLab examples
+
+```bash
+# List all accessible repos for a GitLab namespace
+uv run list_repos https://gitlab.com/api/v4 gnome --provider gitlab
+
+# Filter by repo name substring (case-insensitive)
+uv run list_repos https://gitlab.com/api/v4 gnome --provider gitlab --filter spring
+```
+
+## Using `count_spring_controllers`
+
+`count_spring_controllers` reads a text file with one `owner/repo` (or `group/subgroup/repo`) per line,
+clones each repo, and prints a summary.
+
+### Show help
+
+```bash
+uv run count_spring_controllers
+```
+
+### GitHub examples
+
+```bash
+uv run count_spring_controllers github_repos.txt
+```
+
+### GitLab examples
+
+```bash
+uv run count_spring_controllers gitlab_repos.txt --provider gitlab
+```
+
+## Authentication
+
+- GitHub: set `GITHUB_TOKEN` for private repos/higher limits.
+- GitLab: set `GITLAB_TOKEN` for private repos/higher limits.
+
+Examples:
+
+```bash
+export GITHUB_TOKEN="your_github_token"
+export GITLAB_TOKEN="your_gitlab_token"
+```
+
+For GitHub tokens, create one at: https://github.com/settings/tokens
+
+## Repository list file format
+
+Each line should be a repo path:
+
+```text
+# Comments are allowed
+mycompany/user-service
+mycompany/payment-service
+
+# GitLab subgroup example
+gitlab-org/platform/team-a/service-x
 ```
 
 ## What it counts
@@ -65,7 +96,7 @@ python count_spring_controllers.py repos.txt
 ## Output Example
 
 ```
-Loaded 15 repositories from repos.txt
+Loaded 15 repositories from github_repos.txt
 
 Searching 15 repositories for SpringBoot controllers...
 
