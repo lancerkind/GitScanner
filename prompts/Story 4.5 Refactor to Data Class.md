@@ -33,3 +33,4 @@ class RepoResult:
 - Existing command-line output should remain unchanged unless the current tests require otherwise.
 - Existing tests should continue to pass.
 - Add or update tests to verify that scanning returns populated `RepoResult` instances.
+[Story 4.5 Refactor to Data Class.md](Story%204.5%20Refactor%20to%20Data%20Class.md)
