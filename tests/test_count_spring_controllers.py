@@ -17,6 +17,7 @@ from gitscanner.count_spring_controllers import (
     process_repositories,
     read_repos_from_file,
 )
+from gitscanner.models import RepoResult, ScanSummary
 
 
 class DummyResponse:
@@ -154,22 +155,36 @@ def test_process_repositories_aggregates_totals_and_filters_zero_repos():
         clone_and_count_func=fake_clone_and_count,
     )
 
-    assert stats["total_rest_controllers"] == 2
-    assert stats["total_controllers"] == 4
-    assert stats["total_controller_files"] == 6
-    assert [item["repo"] for item in stats["repo_results"]] == ["org/a", "org/c"]
+    assert isinstance(stats, ScanSummary)
+    assert stats.total_rest_controllers == 2
+    assert stats.total_controllers == 4
+    assert stats.total_controller_files == 6
+    assert all(isinstance(item, RepoResult) for item in stats.repo_results)
+    assert [item.repo_name for item in stats.repo_results] == ["org/a", "org/c"]
+    assert stats.repo_results[0].total_at_rest_controllers == 2
+    assert stats.repo_results[0].total_at_controllers == 1
+    assert stats.repo_results[0].total_rest_controllers == 3
 
 
 def test_format_summary_lines_includes_sorted_breakdown():
-    stats = {
-        "total_rest_controllers": 2,
-        "total_controllers": 3,
-        "total_controller_files": 5,
-        "repo_results": [
-            {"repo": "org/one", "total": 1, "rest_controllers": 1, "controllers": 0},
-            {"repo": "org/two", "total": 4, "rest_controllers": 1, "controllers": 3},
+    stats = ScanSummary(
+        total_rest_controllers=2,
+        total_controllers=3,
+        repo_results=[
+            RepoResult(
+                repo_name="org/one",
+                total_at_rest_controllers=1,
+                total_at_controllers=0,
+                total_rest_controllers=1,
+            ),
+            RepoResult(
+                repo_name="org/two",
+                total_at_rest_controllers=1,
+                total_at_controllers=3,
+                total_rest_controllers=4,
+            ),
         ],
-    }
+    )
 
     lines = format_summary_lines(stats, total_repos=3)
     assert any("Repositories with controllers: 2/3" in line for line in lines)
@@ -210,12 +225,18 @@ def test_main_success_prints_summary(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "process_repositories",
-        lambda repos, provider="github", token=None, clone_and_count_func=None: {
-            "total_rest_controllers": 1,
-            "total_controllers": 0,
-            "total_controller_files": 1,
-            "repo_results": [{"repo": "org/repo", "total": 1, "rest_controllers": 1, "controllers": 0}],
-        },
+        lambda repos, provider="github", token=None, clone_and_count_func=None: ScanSummary(
+            total_rest_controllers=1,
+            total_controllers=0,
+            repo_results=[
+                RepoResult(
+                    repo_name="org/repo",
+                    total_at_rest_controllers=1,
+                    total_at_controllers=0,
+                    total_rest_controllers=1,
+                )
+            ],
+        ),
     )
 
     module.main()

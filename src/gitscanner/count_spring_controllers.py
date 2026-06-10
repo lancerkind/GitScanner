@@ -13,6 +13,8 @@ from pathlib import Path
 
 import requests
 
+from gitscanner.models import Controller, RepoResult, ScanSummary
+
 
 def build_provider_token(provider, token=None):
     if token is not None:
@@ -175,23 +177,28 @@ def process_repositories(repos, provider="github", token=None, clone_and_count_f
 
         if total > 0:
             repo_results.append(
-                {
-                    "repo": repo_name,
-                    "rest_controllers": rest_count,
-                    "controllers": controller_count,
-                    "total": total,
-                }
+                RepoResult(
+                    repo_name=repo_name,
+                    controllers=[
+                        Controller(
+                            rest_controllers=rest_count,
+                            controllers=controller_count,
+                        )
+                    ],
+                    total_at_rest_controllers=rest_count,
+                    total_at_controllers=controller_count,
+                    total_rest_controllers=total,
+                )
             )
 
         total_rest_controllers += rest_count
         total_controllers += controller_count
 
-    return {
-        "total_rest_controllers": total_rest_controllers,
-        "total_controllers": total_controllers,
-        "total_controller_files": total_rest_controllers + total_controllers,
-        "repo_results": repo_results,
-    }
+    return ScanSummary(
+        total_rest_controllers=total_rest_controllers,
+        total_controllers=total_controllers,
+        repo_results=repo_results,
+    )
 
 
 def format_summary_lines(stats, total_repos):
@@ -199,20 +206,20 @@ def format_summary_lines(stats, total_repos):
         "\n" + "=" * 70,
         "SUMMARY",
         "=" * 70,
-        f"\nRepositories with controllers: {len(stats['repo_results'])}/{total_repos}",
-        f"\nTotal @RestController files: {stats['total_rest_controllers']}",
-        f"Total @Controller files: {stats['total_controllers']}",
-        f"Total Controller files: {stats['total_controller_files']}",
+        f"\nRepositories with controllers: {len(stats.repo_results)}/{total_repos}",
+        f"\nTotal @RestController files: {stats.total_rest_controllers}",
+        f"Total @Controller files: {stats.total_controllers}",
+        f"Total Controller files: {stats.total_controller_files}",
     ]
 
-    if stats["repo_results"]:
+    if stats.repo_results:
         lines.extend([
             "\n" + "-" * 70,
             "Breakdown by repository:",
             "-" * 70,
         ])
-        for result in sorted(stats["repo_results"], key=lambda x: x["total"], reverse=True):
-            lines.append(f"{result['repo']:50} {result['total']:3} controllers")
+        for result in sorted(stats.repo_results, key=lambda x: x.total_rest_controllers, reverse=True):
+            lines.append(f"{result.repo_name:50} {result.total_rest_controllers:3} controllers")
 
     return lines
 
