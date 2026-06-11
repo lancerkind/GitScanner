@@ -1,4 +1,5 @@
 import subprocess
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,14 +11,18 @@ from gitscanner.count_spring_controllers import (
     build_gitlab_headers,
     build_gitlab_token,
     build_github_headers,
+    build_summary_for_scan_run,
     count_controllers_in_directory,
+    create_scan_run,
     format_summary_lines,
+    initialize_database,
+    insert_controllers,
+    insert_repo,
     get_repo_info,
     parse_cli_args,
     process_repositories,
     read_repos_from_file,
 )
-from gitscanner.models import RepoResult, ScanSummary
 
 
 class DummyResponse:
@@ -116,9 +121,15 @@ def test_count_controllers_in_directory_counts_controller_types(tmp_path):
     (src_dir / "B.java").write_text("@Controller class B {}", encoding="utf-8")
     (src_dir / "C.java").write_text("class C {}", encoding="utf-8")
 
-    rest_count, controller_count = count_controllers_in_directory(tmp_path)
-    assert rest_count == 1
-    assert controller_count == 1
+    controllers = count_controllers_in_directory(tmp_path)
+    assert len(controllers) == 2
+    assert sorted(item["type"] for item in controllers) == ["Controller", "RestController"]
+
+
+def test_count_controllers_in_directory_prefers_rest_controller_if_both_annotations(tmp_path):
+    (tmp_path / "Both.java").write_text("@RestController @Controller class Both {}", encoding="utf-8")
+    controllers = count_controllers_in_directory(tmp_path)
+    assert controllers == [{"name": "Both", "base_path": None, "type": "RestController"}]
 
 
 def test_count_controllers_in_directory_ignores_unreadable_file(monkeypatch, tmp_path):
@@ -135,61 +146,109 @@ def test_count_controllers_in_directory_ignores_unreadable_file(monkeypatch, tmp
         return original_open(file, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "open", fake_open)
-    rest_count, controller_count = count_controllers_in_directory(tmp_path)
-    assert (rest_count, controller_count) == (0, 0)
+    controllers = count_controllers_in_directory(tmp_path)
+    assert controllers == []
 
 
 def test_process_repositories_aggregates_totals_and_filters_zero_repos():
     def fake_clone_and_count(repo_name, provider="github", token=None):
         assert provider == "gitlab"
         return {
-            "org/a": (2, 1),
-            "org/b": (0, 0),
-            "org/c": (0, 3),
+            "org/a": [
+                {"name": "A1", "base_path": None, "type": "RestController"},
+                {"name": "A2", "base_path": None, "type": "RestController"},
+                {"name": "A3", "base_path": None, "type": "Controller"},
+            ],
+            "org/b": [],
+            "org/c": [
+                {"name": "C1", "base_path": None, "type": "Controller"},
+                {"name": "C2", "base_path": None, "type": "Controller"},
+                {"name": "C3", "base_path": None, "type": "Controller"},
+            ],
         }[repo_name]
 
-    stats = process_repositories(
+    _, stats = process_repositories(
         ["org/a", "org/b", "org/c"],
         provider="gitlab",
         token="abc",
+        db_path=":memory:",
         clone_and_count_func=fake_clone_and_count,
     )
 
-    assert isinstance(stats, ScanSummary)
-    assert stats.total_rest_controllers == 2
-    assert stats.total_controllers == 4
-    assert stats.total_controller_files == 6
-    assert all(isinstance(item, RepoResult) for item in stats.repo_results)
-    assert [item.repo_name for item in stats.repo_results] == ["org/a", "org/c"]
-    assert stats.repo_results[0].total_at_rest_controllers == 2
-    assert stats.repo_results[0].total_at_controllers == 1
-    assert stats.repo_results[0].total_rest_controllers == 3
+    assert stats["total_rest_controllers"] == 2
+    assert stats["total_controllers"] == 4
+    assert stats["total_controller_files"] == 6
+    assert [item["repo_name"] for item in stats["repo_results"]] == ["org/a", "org/c"]
+    assert stats["repo_results"][0]["total_at_rest_controllers"] == 2
+    assert stats["repo_results"][0]["total_at_controllers"] == 1
+    assert stats["repo_results"][0]["total_rest_controllers"] == 3
 
 
 def test_format_summary_lines_includes_sorted_breakdown():
-    stats = ScanSummary(
-        total_rest_controllers=2,
-        total_controllers=3,
-        repo_results=[
-            RepoResult(
-                repo_name="org/one",
-                total_at_rest_controllers=1,
-                total_at_controllers=0,
-                total_rest_controllers=1,
-            ),
-            RepoResult(
-                repo_name="org/two",
-                total_at_rest_controllers=1,
-                total_at_controllers=3,
-                total_rest_controllers=4,
-            ),
+    stats = {
+        "repos_with_controllers": 2,
+        "total_repos_scanned": 3,
+        "total_rest_controllers": 2,
+        "total_controllers": 3,
+        "total_controller_files": 5,
+        "repo_results": [
+            {
+                "repo_name": "org/two",
+                "total_at_rest_controllers": 1,
+                "total_at_controllers": 3,
+                "total_rest_controllers": 4,
+            },
+            {
+                "repo_name": "org/one",
+                "total_at_rest_controllers": 1,
+                "total_at_controllers": 0,
+                "total_rest_controllers": 1,
+            },
         ],
-    )
+    }
 
-    lines = format_summary_lines(stats, total_repos=3)
+    lines = format_summary_lines(stats)
     assert any("Repositories with controllers: 2/3" in line for line in lines)
     joined = "\n".join(lines)
     assert joined.index("org/two") < joined.index("org/one")
+
+
+def test_initialize_database_creates_schema(tmp_path):
+    db_path = tmp_path / "scan.db"
+    with sqlite3.connect(db_path) as conn:
+        initialize_database(conn)
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('scan_runs','repos','controllers')"
+            )
+        }
+    assert tables == {"scan_runs", "repos", "controllers"}
+
+
+def test_db_insert_scan_repo_controller_and_summary(tmp_path):
+    db_path = tmp_path / "scan.db"
+    with sqlite3.connect(db_path) as conn:
+        initialize_database(conn)
+        scan_run_id = create_scan_run(conn)
+        repo_id = insert_repo(conn, scan_run_id, "org/repo", "https://example/repo.git")
+        insert_controllers(
+            conn,
+            repo_id,
+            [
+                {"name": "A", "base_path": None, "type": "RestController"},
+                {"name": "B", "base_path": None, "type": "Controller"},
+            ],
+        )
+        conn.commit()
+        summary = build_summary_for_scan_run(conn, scan_run_id)
+
+    assert summary["total_repos_scanned"] == 1
+    assert summary["repos_with_controllers"] == 1
+    assert summary["total_rest_controllers"] == 1
+    assert summary["total_controllers"] == 1
+    assert summary["total_controller_files"] == 2
+    assert summary["repo_results"][0]["repo_name"] == "org/repo"
 
 
 def test_clone_and_count_wraps_timeout(monkeypatch):
@@ -225,17 +284,23 @@ def test_main_success_prints_summary(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "process_repositories",
-        lambda repos, provider="github", token=None, clone_and_count_func=None: ScanSummary(
-            total_rest_controllers=1,
-            total_controllers=0,
-            repo_results=[
-                RepoResult(
-                    repo_name="org/repo",
-                    total_at_rest_controllers=1,
-                    total_at_controllers=0,
-                    total_rest_controllers=1,
-                )
-            ],
+        lambda repos, provider="github", token=None, db_path=None, clone_and_count_func=None, sqlite_connect=None: (
+            1,
+            {
+                "total_repos_scanned": 1,
+                "repos_with_controllers": 1,
+                "total_rest_controllers": 1,
+                "total_controllers": 0,
+                "total_controller_files": 1,
+                "repo_results": [
+                    {
+                        "repo_name": "org/repo",
+                        "total_at_rest_controllers": 1,
+                        "total_at_controllers": 0,
+                        "total_rest_controllers": 1,
+                    }
+                ],
+            },
         ),
     )
 

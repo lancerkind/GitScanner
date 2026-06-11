@@ -6,6 +6,7 @@ Useful for private repos or when code search API is limited.
 
 import argparse
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,34 @@ from pathlib import Path
 
 import requests
 
-from gitscanner.models import Controller, RepoResult, ScanSummary
+
+DB_FILE_NAME = "gitscanner.db"
+SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS scan_runs (
+        id          INTEGER PRIMARY KEY,
+        scanned_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        notes       TEXT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS repos (
+        id          INTEGER PRIMARY KEY,
+        scan_run_id INTEGER REFERENCES scan_runs(id),
+        name        TEXT,
+        url         TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS controllers (
+        id          INTEGER PRIMARY KEY,
+        repo_id     INTEGER REFERENCES repos(id),
+        name        TEXT,
+        base_path   TEXT,
+        type        TEXT CHECK(type IN ('RestController', 'Controller'))
+    )
+    """,
+)
 
 
 def build_provider_token(provider, token=None):
@@ -104,26 +132,132 @@ def get_repo_info(repo_full_name, headers=None, get=requests.get):
     return None
 
 
+def get_default_db_path():
+    return str(Path.cwd() / DB_FILE_NAME)
+
+
+def initialize_database(conn):
+    for statement in SCHEMA_STATEMENTS:
+        conn.execute(statement)
+    conn.commit()
+
+
+def create_scan_run(conn, notes=None):
+    cursor = conn.execute("INSERT INTO scan_runs(notes) VALUES (?)", (notes,))
+    conn.commit()
+    return cursor.lastrowid
+
+
+def insert_repo(conn, scan_run_id, repo_name, url=None):
+    cursor = conn.execute(
+        "INSERT INTO repos(scan_run_id, name, url) VALUES (?, ?, ?)",
+        (scan_run_id, repo_name, url),
+    )
+    return cursor.lastrowid
+
+
+def insert_controllers(conn, repo_id, controllers):
+    conn.executemany(
+        "INSERT INTO controllers(repo_id, name, base_path, type) VALUES (?, ?, ?, ?)",
+        [(repo_id, item["name"], item["base_path"], item["type"]) for item in controllers],
+    )
+
+
+def build_summary_for_scan_run(conn, scan_run_id):
+    total_repos_scanned = conn.execute(
+        "SELECT COUNT(*) FROM repos WHERE scan_run_id = ?",
+        (scan_run_id,),
+    ).fetchone()[0]
+    repos_with_controllers = conn.execute(
+        """
+        SELECT COUNT(DISTINCT r.id)
+        FROM repos r
+        JOIN controllers c ON c.repo_id = r.id
+        WHERE r.scan_run_id = ?
+        """,
+        (scan_run_id,),
+    ).fetchone()[0]
+    total_rest_controllers = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM controllers c
+        JOIN repos r ON r.id = c.repo_id
+        WHERE r.scan_run_id = ? AND c.type = 'RestController'
+        """,
+        (scan_run_id,),
+    ).fetchone()[0]
+    total_controllers = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM controllers c
+        JOIN repos r ON r.id = c.repo_id
+        WHERE r.scan_run_id = ? AND c.type = 'Controller'
+        """,
+        (scan_run_id,),
+    ).fetchone()[0]
+    breakdown_rows = conn.execute(
+        """
+        SELECT
+            r.name,
+            SUM(CASE WHEN c.type = 'RestController' THEN 1 ELSE 0 END) AS rest_count,
+            SUM(CASE WHEN c.type = 'Controller' THEN 1 ELSE 0 END) AS controller_count,
+            COUNT(*) AS total_count
+        FROM repos r
+        JOIN controllers c ON c.repo_id = r.id
+        WHERE r.scan_run_id = ?
+        GROUP BY r.id, r.name
+        ORDER BY total_count DESC, r.name ASC
+        """,
+        (scan_run_id,),
+    ).fetchall()
+
+    return {
+        "total_repos_scanned": total_repos_scanned,
+        "repos_with_controllers": repos_with_controllers,
+        "total_rest_controllers": total_rest_controllers,
+        "total_controllers": total_controllers,
+        "total_controller_files": total_rest_controllers + total_controllers,
+        "repo_results": [
+            {
+                "repo_name": row[0],
+                "total_at_rest_controllers": row[1],
+                "total_at_controllers": row[2],
+                "total_rest_controllers": row[3],
+            }
+            for row in breakdown_rows
+        ],
+    }
+
+
 def count_controllers_in_directory(directory):
-    """Count controller annotations in Java files within a directory."""
-    rest_controllers = 0
-    controllers = 0
+    """Collect Spring controller files found within a directory."""
+    controllers = []
 
     for java_file in Path(directory).rglob("*.java"):
         try:
             with open(java_file, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
 
-                # Count @RestController
                 if "@RestController" in content:
-                    rest_controllers += 1
-                # Count @Controller (but not if file has @RestController)
+                    controllers.append(
+                        {
+                            "name": java_file.stem,
+                            "base_path": None,
+                            "type": "RestController",
+                        }
+                    )
                 elif "@Controller" in content:
-                    controllers += 1
+                    controllers.append(
+                        {
+                            "name": java_file.stem,
+                            "base_path": None,
+                            "type": "Controller",
+                        }
+                    )
         except Exception:
             continue
 
-    return rest_controllers, controllers
+    return controllers
 
 
 def build_clone_url(repo_full_name, provider="github", token=None):
@@ -140,7 +274,7 @@ def build_clone_url(repo_full_name, provider="github", token=None):
 
 
 def clone_and_count(repo_full_name, provider="github", token=None, run=subprocess.run):
-    """Clone a repo temporarily and count controllers."""
+    """Clone a repo temporarily and collect controllers."""
     clone_url = build_clone_url(repo_full_name, provider=provider, token=token)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -156,9 +290,7 @@ def clone_and_count(repo_full_name, provider="github", token=None, run=subproces
             if result.returncode != 0:
                 raise RuntimeError(f"Clone failed: {result.stderr.strip()}")
 
-            # Count controllers
-            rest_count, controller_count = count_controllers_in_directory(tmpdir)
-            return rest_count, controller_count
+            return count_controllers_in_directory(tmpdir)
 
         except subprocess.TimeoutExpired:
             raise RuntimeError("Clone timeout")
@@ -166,60 +298,48 @@ def clone_and_count(repo_full_name, provider="github", token=None, run=subproces
             raise RuntimeError(f"Error: {exc}") from exc
 
 
-def process_repositories(repos, provider="github", token=None, clone_and_count_func=clone_and_count):
-    total_rest_controllers = 0
-    total_controllers = 0
-    repo_results = []
+def process_repositories(
+    repos,
+    provider="github",
+    token=None,
+    db_path=None,
+    clone_and_count_func=clone_and_count,
+    sqlite_connect=sqlite3.connect,
+):
+    db_path = db_path or get_default_db_path()
+    with sqlite_connect(db_path) as conn:
+        initialize_database(conn)
+        scan_run_id = create_scan_run(conn)
 
-    for repo_name in repos:
-        rest_count, controller_count = clone_and_count_func(repo_name, provider=provider, token=token)
-        total = rest_count + controller_count
+        for repo_name in repos:
+            controllers = clone_and_count_func(repo_name, provider=provider, token=token)
+            with conn:
+                repo_id = insert_repo(conn, scan_run_id, repo_name, url=build_clone_url(repo_name, provider, token))
+                if controllers:
+                    insert_controllers(conn, repo_id, controllers)
 
-        if total > 0:
-            repo_results.append(
-                RepoResult(
-                    repo_name=repo_name,
-                    controllers=[
-                        Controller(
-                            rest_controllers=rest_count,
-                            controllers=controller_count,
-                        )
-                    ],
-                    total_at_rest_controllers=rest_count,
-                    total_at_controllers=controller_count,
-                    total_rest_controllers=total,
-                )
-            )
-
-        total_rest_controllers += rest_count
-        total_controllers += controller_count
-
-    return ScanSummary(
-        total_rest_controllers=total_rest_controllers,
-        total_controllers=total_controllers,
-        repo_results=repo_results,
-    )
+        return scan_run_id, build_summary_for_scan_run(conn, scan_run_id)
 
 
-def format_summary_lines(stats, total_repos):
+def format_summary_lines(stats):
     lines = [
         "\n" + "=" * 70,
         "SUMMARY",
         "=" * 70,
-        f"\nRepositories with controllers: {len(stats.repo_results)}/{total_repos}",
-        f"\nTotal @RestController files: {stats.total_rest_controllers}",
-        f"Total @Controller files: {stats.total_controllers}",
-        f"Total Controller files: {stats.total_controller_files}",
+        f"\nRepositories with controllers: {stats['repos_with_controllers']}/{stats['total_repos_scanned']}",
+        f"\nTotal @RestController files: {stats['total_rest_controllers']}",
+        f"Total @Controller files: {stats['total_controllers']}",
+        f"Total Controller files: {stats['total_controller_files']}",
     ]
 
-    if stats.repo_results:
+    if stats["repo_results"]:
         lines.extend([
             "\n" + "-" * 70,
             "Breakdown by repository:",
             "-" * 70,
         ])
-        for result in sorted(stats.repo_results, key=lambda x: x.total_rest_controllers, reverse=True):
-            lines.append(f"{result.repo_name:50} {result.total_rest_controllers:3} controllers")
+        for result in stats["repo_results"]:
+            lines.append(f"{result['repo_name']:50} {result['total_rest_controllers']:3} controllers")
 
     return lines
 
@@ -240,8 +360,8 @@ def main():
         else:
             token = build_github_token()
 
-        stats = process_repositories(repos, provider=args.provider, token=token)
-        for line in format_summary_lines(stats, len(repos)):
+        _, stats = process_repositories(repos, provider=args.provider, token=token)
+        for line in format_summary_lines(stats):
             print(line)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
