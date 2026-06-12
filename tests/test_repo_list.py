@@ -15,11 +15,13 @@ from gitscanner.repo_list import (
 
 
 class DummyResponse:
-    def __init__(self, status_code=200, ok=True, payload=None, links=None):
+    def __init__(self, status_code=200, ok=True, payload=None, links=None, headers=None, text=""):
         self.status_code = status_code
         self.ok = ok
         self._payload = payload if payload is not None else []
         self.links = links if links is not None else {}
+        self.headers = headers if headers is not None else {"Content-Type": "application/json"}
+        self.text = text
 
     def json(self):
         return self._payload
@@ -266,16 +268,73 @@ def test_fetch_gitlab_repos_auth_error_mentions_gitlab_token(status_code):
         fetch_gitlab_repos("https://gitlab.com/api/v4", "group", get=fake_get)
 
 
-def test_fetch_github_repos_invalid_json_reports_unexpected_response():
+def test_fetch_github_repos_http_200_with_text_html_content_type_detects_wrong_endpoint():
+    def fake_get(url, headers=None, params=None):
+        return DummyResponse(
+            status_code=200,
+            ok=True,
+            payload={"status": "ok", "data": None},
+            headers={"Content-Type": "text/html"},
+            text="<html><body>Welcome</body></html>",
+        )
+
+    with pytest.raises(RuntimeError, match="does not appear to be a valid GitHub API endpoint"):
+        fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
+
+
+def test_fetch_github_repos_http_200_with_html_body_detects_wrong_endpoint():
+    def fake_get(url, headers=None, params=None):
+        return DummyResponse(
+            status_code=200,
+            ok=True,
+            payload={"message": "Welcome"},
+            headers={"Content-Type": "application/json"},
+            text="<html><body>Index</body></html>",
+        )
+
+    with pytest.raises(RuntimeError, match="does not appear to be a valid GitHub API endpoint"):
+        fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
+
+
+def test_fetch_github_repos_http_200_with_invalid_json_detects_wrong_endpoint():
     class InvalidJsonResponse(DummyResponse):
         def json(self):
             raise ValueError("not json")
 
     def fake_get(url, headers=None, params=None):
-        return InvalidJsonResponse(status_code=200, ok=True)
+        return InvalidJsonResponse(
+            status_code=200,
+            ok=True,
+            headers={"Content-Type": "text/plain"},
+            text="Welcome",
+        )
 
-    with pytest.raises(RuntimeError, match="unexpected response format"):
+    with pytest.raises(RuntimeError, match="does not appear to be a valid GitHub API endpoint"):
         fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
+
+
+def test_fetch_github_repos_http_200_with_valid_empty_json_array_returns_empty():
+    def fake_get(url, headers=None, params=None):
+        return DummyResponse(status_code=200, ok=True, payload=[], headers={"Content-Type": "application/json"}, text="[]")
+
+    repos = fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
+    assert repos == []
+
+
+def test_fetch_gitlab_repos_http_200_with_valid_repository_response_succeeds():
+    def fake_get(url, headers=None, params=None):
+        if url.endswith("/groups/group/projects"):
+            return DummyResponse(
+                status_code=200,
+                ok=True,
+                payload=[{"name": "repo", "path_with_namespace": "group/repo"}],
+                headers={"Content-Type": "application/json"},
+                text='[{"name": "repo"}]',
+            )
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    repos = fetch_gitlab_repos("https://gitlab.com/api/v4", "group", get=fake_get)
+    assert repos == [{"name": "repo", "path_with_namespace": "group/repo"}]
 
 
 def test_fetch_repos_routes_by_provider(monkeypatch):

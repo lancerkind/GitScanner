@@ -49,6 +49,14 @@ def _raise_unexpected_response_error(provider_name, status_code, org):
     )
 
 
+def _raise_invalid_api_endpoint_response_error(provider_name, api_base_url):
+    raise RuntimeError(
+        f"Error: API_BASE_URL does not appear to be a valid {provider_name} API endpoint: {api_base_url}\n"
+        f"The server returned HTTP 200, but the response did not look like a {provider_name} API response.\n"
+        "Please verify that the API URL is correct."
+    )
+
+
 def _safe_parse_json(response, provider_name, org):
     try:
         return response.json()
@@ -56,6 +64,80 @@ def _safe_parse_json(response, provider_name, org):
         raise RuntimeError(
             f"Error: {provider_name} API returned an unexpected response format while listing repositories for {org}."
         ) from exc
+
+
+def _response_text(response):
+    text = getattr(response, "text", None)
+    if text is not None:
+        return text
+
+    payload = getattr(response, "_payload", None)
+    if isinstance(payload, str):
+        return payload
+
+    return ""
+
+
+def _content_type(response):
+    headers = getattr(response, "headers", {}) or {}
+    return headers.get("Content-Type", "").lower()
+
+
+def _is_json_content_type(content_type):
+    return "application/json" in content_type or content_type.endswith("+json")
+
+
+def _looks_like_wrong_api_response(data, text_lower):
+    if isinstance(data, dict):
+        status = data.get("status")
+        message = data.get("message")
+        error = data.get("error")
+        code = data.get("code")
+
+        if status == "ok" and data.get("data") is None:
+            return True
+
+        generic_messages = {"welcome", "route not found", "not found", "page not found"}
+        if isinstance(message, str) and message.strip().lower() in generic_messages:
+            return True
+
+        if isinstance(error, str) and "not found" in error.lower():
+            return True
+
+        if isinstance(code, int) and code >= 400:
+            return True
+
+    if "<html" in text_lower:
+        return True
+
+    return any(keyword in text_lower for keyword in ["not found", "route not found", "page not found", "<meta http-equiv=\"refresh\"", "window.location"])
+
+
+def _validate_first_success_response(response, provider_name, api_base_url):
+    content_type = _content_type(response)
+    body_text = _response_text(response)
+    body_text_lower = body_text.lower()
+
+    if content_type and not _is_json_content_type(content_type):
+        _raise_invalid_api_endpoint_response_error(provider_name, api_base_url)
+
+    if "<html" in body_text_lower:
+        _raise_invalid_api_endpoint_response_error(provider_name, api_base_url)
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        if content_type and _is_json_content_type(content_type):
+            raise RuntimeError(
+                f"Error: {provider_name} API returned an unexpected response format while listing repositories."
+            ) from exc
+        _raise_invalid_api_endpoint_response_error(provider_name, api_base_url)
+        raise
+
+    if _looks_like_wrong_api_response(data, body_text_lower):
+        _raise_invalid_api_endpoint_response_error(provider_name, api_base_url)
+
+    return data
 
 
 def build_parser():
@@ -122,6 +204,7 @@ def fetch_github_repos(api_base_url, org, headers=None, get=requests.get):
     url = f"{base_url}/orgs/{org}/repos"
     repos = []
     params = {"per_page": 100, "page": 1}
+    validated_first_success = False
 
     try:
         response = get(url, headers=headers, params=params)
@@ -142,7 +225,11 @@ def fetch_github_repos(api_base_url, org, headers=None, get=requests.get):
             if not response.ok:
                 _raise_unexpected_response_error("GitHub", response.status_code, org)
 
-            page_repos = _safe_parse_json(response, "GitHub", org)
+            if not validated_first_success:
+                page_repos = _validate_first_success_response(response, "GitHub", base_url)
+                validated_first_success = True
+            else:
+                page_repos = _safe_parse_json(response, "GitHub", org)
             if not page_repos:
                 break
 
@@ -170,6 +257,7 @@ def _fetch_gitlab_group_projects(base_url, org, headers, get):
     params = {"per_page": 100, "page": 1, "include_subgroups": True}
     url = f"{base_url}/groups/{encoded_org}/projects"
     response = get(url, headers=headers, params=params)
+    validated_first_success = False
 
     while True:
         if response.status_code == 401:
@@ -184,7 +272,11 @@ def _fetch_gitlab_group_projects(base_url, org, headers, get):
         if not response.ok:
             _raise_unexpected_response_error("GitLab", response.status_code, org)
 
-        page_repos = _safe_parse_json(response, "GitLab", org)
+        if not validated_first_success:
+            page_repos = _validate_first_success_response(response, "GitLab", base_url)
+            validated_first_success = True
+        else:
+            page_repos = _safe_parse_json(response, "GitLab", org)
         if not page_repos:
             break
 
@@ -203,6 +295,7 @@ def _fetch_gitlab_user_projects(base_url, org, headers, get):
     encoded_org = quote(org, safe="")
     users_url = f"{base_url}/users"
     users_response = get(users_url, headers=headers, params={"username": org, "per_page": 1})
+    validated_first_success = False
 
     if users_response.status_code == 401:
         _raise_auth_required_error("GITLAB_TOKEN")
@@ -213,7 +306,11 @@ def _fetch_gitlab_user_projects(base_url, org, headers, get):
     if not users_response.ok:
         _raise_unexpected_response_error("GitLab", users_response.status_code, org)
 
-    users = _safe_parse_json(users_response, "GitLab", org)
+    if not validated_first_success:
+        users = _validate_first_success_response(users_response, "GitLab", base_url)
+        validated_first_success = True
+    else:
+        users = _safe_parse_json(users_response, "GitLab", org)
     if users:
         user_id = users[0]["id"]
         repos = []
@@ -230,7 +327,11 @@ def _fetch_gitlab_user_projects(base_url, org, headers, get):
             if not response.ok:
                 _raise_unexpected_response_error("GitLab", response.status_code, org)
 
-            page_repos = _safe_parse_json(response, "GitLab", org)
+            if not validated_first_success:
+                page_repos = _validate_first_success_response(response, "GitLab", base_url)
+                validated_first_success = True
+            else:
+                page_repos = _safe_parse_json(response, "GitLab", org)
             if not page_repos:
                 break
 
@@ -260,7 +361,11 @@ def _fetch_gitlab_user_projects(base_url, org, headers, get):
         if not response.ok:
             _raise_unexpected_response_error("GitLab", response.status_code, org)
 
-        page_repos = _safe_parse_json(response, "GitLab", org)
+        if not validated_first_success:
+            page_repos = _validate_first_success_response(response, "GitLab", base_url)
+            validated_first_success = True
+        else:
+            page_repos = _safe_parse_json(response, "GitLab", org)
         if not page_repos:
             break
 
@@ -290,6 +395,8 @@ def fetch_gitlab_repos(api_base_url, org, headers=None, get=requests.get):
         _raise_connectivity_error(base_url)
     except requests.exceptions.RequestException as exc:
         _raise_connectivity_error(base_url)
+
+    return []
 
 
 def fetch_repos(api_base_url, org, provider, get=requests.get):
