@@ -9,7 +9,7 @@ import requests
 
 def _raise_connectivity_error(api_base_url):
     raise RuntimeError(
-        f"Error: Could not connect to API URL: {api_base_url}\n"
+        f"Error: Could not connect to API_BASE_URL: {api_base_url}\n"
         "Please verify that the API URL is correct and reachable."
     )
 

@@ -134,7 +134,7 @@ def test_fetch_github_repos_connection_error_mentions_api_url():
     def fake_get(url, headers=None, params=None):
         raise requests.exceptions.ConnectionError("dns failure")
 
-    with pytest.raises(RuntimeError, match="Could not connect to API URL: https://api.github.com"):
+    with pytest.raises(RuntimeError, match="Could not connect to API_BASE_URL: https://api.github.com"):
         fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
 
 
@@ -252,7 +252,7 @@ def test_fetch_gitlab_repos_connection_error_mentions_api_url():
     def fake_get(url, headers=None, params=None):
         raise requests.exceptions.ConnectionError("host unreachable")
 
-    with pytest.raises(RuntimeError, match="Could not connect to API URL: https://gitlab.com/api/v4"):
+    with pytest.raises(RuntimeError, match="Could not connect to API_BASE_URL: https://gitlab.com/api/v4"):
         fetch_gitlab_repos("https://gitlab.com/api/v4", "group", get=fake_get)
 
 
