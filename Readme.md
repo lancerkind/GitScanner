@@ -165,3 +165,14 @@ personal-account/project-c
 **No results found:**
 - Check that repos contain Java/SpringBoot code
 - Verify annotation format (some projects use fully qualified names)
+
+**invalid peer certificate: UnknownIssuer**
+**Failed to download `pytest==9.0.3`
+  ├─▶ Request failed after 3 retries
+  ├─▶ Failed to fetch: `https://files.pythonhosted.org/packages/d4/24/a372aaf5c9b7208e7112038812994107bc65a84cd00e0354a88c2c77a617/pytest-9.0.3-py3-none-any.whl`
+  ├─▶ error sending request for url (https://files.pythonhosted.org/packages/d4/24/a372aaf5c9b7208e7112038812994107bc65a84cd00e0354a88c2c77a617/pytest-9.0.3-py3-none-any.whl)
+  ├─▶ client error (Connect)
+  ╰─▶ invalid peer certificate: UnknownIssuer**
+- I think you only have to do `export UV_NATIVE_TLS=true` and then your `uv sync` etc. will work.  This tells UV that
+it should use the Certificate Authorities in your MacOS keychain.  This is probably coming up due to corporate firewall.
+- If the above doesn't solve the problem, you may also need to install an SSL provider for python: `brew install openssl`
