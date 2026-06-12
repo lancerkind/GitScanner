@@ -2,8 +2,60 @@ import argparse
 import os
 import sys
 from urllib.parse import quote
+from requests.exceptions import ConnectionError, Timeout
 
 import requests
+
+
+def _raise_connectivity_error(api_base_url):
+    raise RuntimeError(
+        f"Error: Could not connect to API URL: {api_base_url}\n"
+        "Please verify that the API URL is correct and reachable."
+    )
+
+
+def _raise_timeout_error(api_base_url):
+    raise RuntimeError(
+        f"Error: Request to {api_base_url} timed out.\n"
+        "Please check your network connection and try again."
+    )
+
+
+def _raise_auth_required_error(token_env_var):
+    raise RuntimeError(
+        "Error: Authentication is required to access this resource.\n"
+        f"Please set {token_env_var} and try again."
+    )
+
+
+def _raise_auth_failed_error(token_env_var):
+    raise RuntimeError(
+        "Error: Authentication failed. The configured token may be invalid, expired, or missing required permissions.\n"
+        f"Please verify {token_env_var} and try again."
+    )
+
+
+def _raise_namespace_not_found_error(org):
+    raise RuntimeError(
+        f"Error: Organization or namespace not found: {org}\n"
+        "Please check the spelling or verify that you have access to it."
+    )
+
+
+def _raise_unexpected_response_error(provider_name, status_code, org):
+    raise RuntimeError(
+        f"Error: {provider_name} API returned HTTP {status_code} while listing repositories for {org}.\n"
+        "Please try again later."
+    )
+
+
+def _safe_parse_json(response, provider_name, org):
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Error: {provider_name} API returned an unexpected response format while listing repositories for {org}."
+        ) from exc
 
 
 def build_parser():
@@ -78,15 +130,19 @@ def fetch_github_repos(api_base_url, org, headers=None, get=requests.get):
             response = get(url, headers=headers, params=params)
 
         while True:
-            if response.status_code in (401, 403):
-                error_msg = "Error: Authentication failed or rate limit exceeded. "
-                error_msg += "Check if GITHUB_TOKEN is missing, invalid, or has insufficient permissions."
-                raise RuntimeError(error_msg)
+            if response.status_code == 401:
+                _raise_auth_required_error("GITHUB_TOKEN")
+
+            if response.status_code == 403:
+                _raise_auth_failed_error("GITHUB_TOKEN")
+
+            if response.status_code == 404:
+                _raise_namespace_not_found_error(org)
 
             if not response.ok:
-                raise RuntimeError(f"Error: Received HTTP {response.status_code} from {url}")
+                _raise_unexpected_response_error("GitHub", response.status_code, org)
 
-            page_repos = response.json()
+            page_repos = _safe_parse_json(response, "GitHub", org)
             if not page_repos:
                 break
 
@@ -98,8 +154,12 @@ def fetch_github_repos(api_base_url, org, headers=None, get=requests.get):
             else:
                 break
 
+    except Timeout as exc:
+        _raise_timeout_error(base_url)
+    except ConnectionError as exc:
+        _raise_connectivity_error(base_url)
     except requests.exceptions.RequestException as exc:
-        raise RuntimeError(f"Error: {exc}") from exc
+        _raise_connectivity_error(base_url)
 
     return repos
 
@@ -112,18 +172,19 @@ def _fetch_gitlab_group_projects(base_url, org, headers, get):
     response = get(url, headers=headers, params=params)
 
     while True:
-        if response.status_code in (401, 403):
-            error_msg = "Error: Authentication failed or access denied for GitLab. "
-            error_msg += "Check if GITLAB_TOKEN is missing, invalid, or has insufficient permissions."
-            raise RuntimeError(error_msg)
+        if response.status_code == 401:
+            _raise_auth_required_error("GITLAB_TOKEN")
+
+        if response.status_code == 403:
+            _raise_auth_failed_error("GITLAB_TOKEN")
 
         if response.status_code == 404:
             return None
 
         if not response.ok:
-            raise RuntimeError(f"Error: Received HTTP {response.status_code} from {url}")
+            _raise_unexpected_response_error("GitLab", response.status_code, org)
 
-        page_repos = response.json()
+        page_repos = _safe_parse_json(response, "GitLab", org)
         if not page_repos:
             break
 
@@ -143,15 +204,16 @@ def _fetch_gitlab_user_projects(base_url, org, headers, get):
     users_url = f"{base_url}/users"
     users_response = get(users_url, headers=headers, params={"username": org, "per_page": 1})
 
-    if users_response.status_code in (401, 403):
-        error_msg = "Error: Authentication failed or access denied for GitLab. "
-        error_msg += "Check if GITLAB_TOKEN is missing, invalid, or has insufficient permissions."
-        raise RuntimeError(error_msg)
+    if users_response.status_code == 401:
+        _raise_auth_required_error("GITLAB_TOKEN")
+
+    if users_response.status_code == 403:
+        _raise_auth_failed_error("GITLAB_TOKEN")
 
     if not users_response.ok:
-        raise RuntimeError(f"Error: Received HTTP {users_response.status_code} from {users_url}")
+        _raise_unexpected_response_error("GitLab", users_response.status_code, org)
 
-    users = users_response.json()
+    users = _safe_parse_json(users_response, "GitLab", org)
     if users:
         user_id = users[0]["id"]
         repos = []
@@ -159,10 +221,16 @@ def _fetch_gitlab_user_projects(base_url, org, headers, get):
         url = f"{base_url}/users/{user_id}/projects"
         response = get(url, headers=headers, params=params)
         while True:
-            if not response.ok:
-                raise RuntimeError(f"Error: Received HTTP {response.status_code} from {url}")
+            if response.status_code == 401:
+                _raise_auth_required_error("GITLAB_TOKEN")
 
-            page_repos = response.json()
+            if response.status_code == 403:
+                _raise_auth_failed_error("GITLAB_TOKEN")
+
+            if not response.ok:
+                _raise_unexpected_response_error("GitLab", response.status_code, org)
+
+            page_repos = _safe_parse_json(response, "GitLab", org)
             if not page_repos:
                 break
 
@@ -180,18 +248,19 @@ def _fetch_gitlab_user_projects(base_url, org, headers, get):
     params = {"per_page": 100, "page": 1}
     response = get(fallback_url, headers=headers, params=params)
     while True:
-        if response.status_code in (401, 403):
-            error_msg = "Error: Authentication failed or access denied for GitLab. "
-            error_msg += "Check if GITLAB_TOKEN is missing, invalid, or has insufficient permissions."
-            raise RuntimeError(error_msg)
+        if response.status_code == 401:
+            _raise_auth_required_error("GITLAB_TOKEN")
+
+        if response.status_code == 403:
+            _raise_auth_failed_error("GITLAB_TOKEN")
 
         if response.status_code == 404:
-            raise RuntimeError(f"Error: Received HTTP 404 from {fallback_url}")
+            _raise_namespace_not_found_error(org)
 
         if not response.ok:
-            raise RuntimeError(f"Error: Received HTTP {response.status_code} from {fallback_url}")
+            _raise_unexpected_response_error("GitLab", response.status_code, org)
 
-        page_repos = response.json()
+        page_repos = _safe_parse_json(response, "GitLab", org)
         if not page_repos:
             break
 
@@ -215,8 +284,12 @@ def fetch_gitlab_repos(api_base_url, org, headers=None, get=requests.get):
         if group_repos is not None:
             return group_repos
         return _fetch_gitlab_user_projects(base_url, org, headers, get)
+    except Timeout as exc:
+        _raise_timeout_error(base_url)
+    except ConnectionError as exc:
+        _raise_connectivity_error(base_url)
     except requests.exceptions.RequestException as exc:
-        raise RuntimeError(f"Error: {exc}") from exc
+        _raise_connectivity_error(base_url)
 
 
 def fetch_repos(api_base_url, org, provider, get=requests.get):

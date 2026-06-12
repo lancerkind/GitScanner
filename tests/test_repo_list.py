@@ -101,7 +101,8 @@ def test_fetch_github_repos_auth_and_rate_limit_errors(status_code):
     def fake_get(url, headers=None, params=None):
         return DummyResponse(status_code=status_code, ok=False)
 
-    with pytest.raises(RuntimeError, match="Authentication failed or rate limit exceeded"):
+    expected = "Authentication is required" if status_code == 401 else "Authentication failed"
+    with pytest.raises(RuntimeError, match=expected):
         fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
 
 
@@ -109,7 +110,15 @@ def test_fetch_github_repos_generic_http_error():
     def fake_get(url, headers=None, params=None):
         return DummyResponse(status_code=500, ok=False)
 
-    with pytest.raises(RuntimeError, match="Received HTTP 500"):
+    with pytest.raises(RuntimeError, match="GitHub API returned HTTP 500"):
+        fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
+
+
+def test_fetch_github_repos_org_not_found_error_is_actionable():
+    def fake_get(url, headers=None, params=None):
+        return DummyResponse(status_code=404, ok=False)
+
+    with pytest.raises(RuntimeError, match="Organization or namespace not found: anthropics"):
         fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
 
 
@@ -117,7 +126,15 @@ def test_fetch_github_repos_wraps_request_exception():
     def fake_get(url, headers=None, params=None):
         raise requests.exceptions.Timeout("network timeout")
 
-    with pytest.raises(RuntimeError, match="network timeout"):
+    with pytest.raises(RuntimeError, match="timed out"):
+        fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
+
+
+def test_fetch_github_repos_connection_error_mentions_api_url():
+    def fake_get(url, headers=None, params=None):
+        raise requests.exceptions.ConnectionError("dns failure")
+
+    with pytest.raises(RuntimeError, match="Could not connect to API URL: https://api.github.com"):
         fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
 
 
@@ -173,7 +190,7 @@ def test_fetch_gitlab_repos_group_http_error_raises_runtime_error():
     def fake_get(url, headers=None, params=None):
         return DummyResponse(status_code=500, ok=False)
 
-    with pytest.raises(RuntimeError, match="Received HTTP 500"):
+    with pytest.raises(RuntimeError, match="GitLab API returned HTTP 500"):
         fetch_gitlab_repos("https://gitlab.com/api/v4", "group", get=fake_get)
 
 
@@ -183,7 +200,7 @@ def test_fetch_gitlab_repos_user_lookup_http_error_raises_runtime_error():
             return DummyResponse(status_code=404, ok=False)
         return DummyResponse(status_code=500, ok=False)
 
-    with pytest.raises(RuntimeError, match="Received HTTP 500"):
+    with pytest.raises(RuntimeError, match="GitLab API returned HTTP 500"):
         fetch_gitlab_repos("https://gitlab.com/api/v4", "user-name", get=fake_get)
 
 
@@ -197,7 +214,7 @@ def test_fetch_gitlab_repos_user_projects_non_ok_raises_runtime_error():
             return DummyResponse(status_code=503, ok=False)
         raise AssertionError("unexpected url")
 
-    with pytest.raises(RuntimeError, match="Received HTTP 503"):
+    with pytest.raises(RuntimeError, match="GitLab API returned HTTP 503"):
         fetch_gitlab_repos("https://gitlab.com/api/v4", "user-name", get=fake_get)
 
 
@@ -209,7 +226,7 @@ def test_fetch_gitlab_repos_fallback_user_auth_and_404_errors():
             return DummyResponse(status_code=200, ok=True, payload=[])
         return DummyResponse(status_code=401, ok=False)
 
-    with pytest.raises(RuntimeError, match="GITLAB_TOKEN"):
+    with pytest.raises(RuntimeError, match="Authentication is required"):
         fetch_gitlab_repos("https://gitlab.com/api/v4", "user-name", get=fake_get_auth)
 
     def fake_get_404(url, headers=None, params=None):
@@ -219,7 +236,7 @@ def test_fetch_gitlab_repos_fallback_user_auth_and_404_errors():
             return DummyResponse(status_code=200, ok=True, payload=[])
         return DummyResponse(status_code=404, ok=False)
 
-    with pytest.raises(RuntimeError, match="Received HTTP 404"):
+    with pytest.raises(RuntimeError, match="Organization or namespace not found: user-name"):
         fetch_gitlab_repos("https://gitlab.com/api/v4", "user-name", get=fake_get_404)
 
 
@@ -227,7 +244,15 @@ def test_fetch_gitlab_repos_wraps_request_exception():
     def fake_get(url, headers=None, params=None):
         raise requests.exceptions.Timeout("gitlab timeout")
 
-    with pytest.raises(RuntimeError, match="gitlab timeout"):
+    with pytest.raises(RuntimeError, match="timed out"):
+        fetch_gitlab_repos("https://gitlab.com/api/v4", "group", get=fake_get)
+
+
+def test_fetch_gitlab_repos_connection_error_mentions_api_url():
+    def fake_get(url, headers=None, params=None):
+        raise requests.exceptions.ConnectionError("host unreachable")
+
+    with pytest.raises(RuntimeError, match="Could not connect to API URL: https://gitlab.com/api/v4"):
         fetch_gitlab_repos("https://gitlab.com/api/v4", "group", get=fake_get)
 
 
@@ -236,8 +261,21 @@ def test_fetch_gitlab_repos_auth_error_mentions_gitlab_token(status_code):
     def fake_get(url, headers=None, params=None):
         return DummyResponse(status_code=status_code, ok=False)
 
-    with pytest.raises(RuntimeError, match="GITLAB_TOKEN"):
+    expected = "Authentication is required" if status_code == 401 else "Authentication failed"
+    with pytest.raises(RuntimeError, match=expected):
         fetch_gitlab_repos("https://gitlab.com/api/v4", "group", get=fake_get)
+
+
+def test_fetch_github_repos_invalid_json_reports_unexpected_response():
+    class InvalidJsonResponse(DummyResponse):
+        def json(self):
+            raise ValueError("not json")
+
+    def fake_get(url, headers=None, params=None):
+        return InvalidJsonResponse(status_code=200, ok=True)
+
+    with pytest.raises(RuntimeError, match="unexpected response format"):
+        fetch_github_repos("https://api.github.com", "anthropics", get=fake_get)
 
 
 def test_fetch_repos_routes_by_provider(monkeypatch):
