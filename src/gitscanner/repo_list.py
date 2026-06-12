@@ -1,6 +1,15 @@
 import argparse
 import os
 import sys
+
+# suppress OpenSSL warnings
+import warnings
+from urllib.parse import quote
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 v2 only supports OpenSSL 1.1.1+.*",
+)
+
 from urllib.parse import quote
 from requests.exceptions import ConnectionError, Timeout
 

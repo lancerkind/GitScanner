@@ -1,4 +1,13 @@
 import pytest
+
+# suppress OpenSSL warnings
+import warnings
+from urllib.parse import quote
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 v2 only supports OpenSSL 1.1.1+.*",
+)
+
 import requests
 from types import SimpleNamespace
 
@@ -12,7 +21,6 @@ from gitscanner.repo_list import (
     format_repo_names,
     parse_cli_args,
 )
-
 
 class DummyResponse:
     def __init__(self, status_code=200, ok=True, payload=None, links=None, headers=None, text=""):
