@@ -124,12 +124,63 @@ def test_count_controllers_in_directory_counts_controller_types(tmp_path):
     controllers = count_controllers_in_directory(tmp_path)
     assert len(controllers) == 2
     assert sorted(item["type"] for item in controllers) == ["Controller", "RestController"]
+    assert all("endpoints" in item for item in controllers)
 
 
 def test_count_controllers_in_directory_prefers_rest_controller_if_both_annotations(tmp_path):
     (tmp_path / "Both.java").write_text("@RestController @Controller class Both {}", encoding="utf-8")
     controllers = count_controllers_in_directory(tmp_path)
-    assert controllers == [{"name": "Both", "base_path": None, "type": "RestController"}]
+    assert controllers == [{"name": "Both", "base_path": None, "type": "RestController", "endpoints": []}]
+
+
+def test_count_controllers_in_directory_extracts_base_path_and_endpoints(tmp_path):
+    (tmp_path / "CatController.java").write_text(
+        """
+        @RestController
+        @RequestMapping(path = "/api/cats")
+        class CatController {
+            @GetMapping("/{id}")
+            Cat getById() {}
+
+            @RequestMapping(value = "/x", method = RequestMethod.POST)
+            void postX() {}
+
+            @RequestMapping("/any")
+            void any() {}
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    controllers = count_controllers_in_directory(tmp_path)
+    assert len(controllers) == 1
+    controller = controllers[0]
+    assert controller["base_path"] == "/api/cats"
+    assert controller["type"] == "RestController"
+    assert controller["endpoints"] == [
+        {"http_method": "GET", "path": "/{id}"},
+        {"http_method": "POST", "path": "/x"},
+        {"http_method": "ANY", "path": "/any"},
+    ]
+
+
+def test_count_controllers_in_directory_supports_multiple_request_methods(tmp_path):
+    (tmp_path / "MultiController.java").write_text(
+        """
+        @Controller
+        class MultiController {
+            @RequestMapping(path = "/m", method = {RequestMethod.GET, RequestMethod.DELETE})
+            String method() { return "ok"; }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    controllers = count_controllers_in_directory(tmp_path)
+    assert controllers[0]["endpoints"] == [
+        {"http_method": "GET", "path": "/m"},
+        {"http_method": "DELETE", "path": "/m"},
+    ]
 
 
 def test_count_controllers_in_directory_ignores_unreadable_file(monkeypatch, tmp_path):
@@ -156,14 +207,14 @@ def test_process_repositories_aggregates_totals_and_filters_zero_repos():
         return {
             "org/a": [
                 {"name": "A1", "base_path": None, "type": "RestController"},
-                {"name": "A2", "base_path": None, "type": "RestController"},
-                {"name": "A3", "base_path": None, "type": "Controller"},
+                {"name": "A2", "base_path": None, "type": "RestController", "endpoints": [{"http_method": "GET", "path": "/a2"}]},
+                {"name": "A3", "base_path": None, "type": "Controller", "endpoints": []},
             ],
             "org/b": [],
             "org/c": [
-                {"name": "C1", "base_path": None, "type": "Controller"},
-                {"name": "C2", "base_path": None, "type": "Controller"},
-                {"name": "C3", "base_path": None, "type": "Controller"},
+                {"name": "C1", "base_path": None, "type": "Controller", "endpoints": [{"http_method": "POST", "path": "/c1"}]},
+                {"name": "C2", "base_path": None, "type": "Controller", "endpoints": []},
+                {"name": "C3", "base_path": None, "type": "Controller", "endpoints": []},
             ],
         }[repo_name]
 
@@ -182,6 +233,7 @@ def test_process_repositories_aggregates_totals_and_filters_zero_repos():
     assert stats["repo_results"][0]["total_at_rest_controllers"] == 2
     assert stats["repo_results"][0]["total_at_controllers"] == 1
     assert stats["repo_results"][0]["total_rest_controllers"] == 3
+    assert stats["total_endpoints"] == 2
 
 
 def test_format_summary_lines_includes_sorted_breakdown():
@@ -191,6 +243,7 @@ def test_format_summary_lines_includes_sorted_breakdown():
         "total_rest_controllers": 2,
         "total_controllers": 3,
         "total_controller_files": 5,
+        "total_endpoints": 7,
         "repo_results": [
             {
                 "repo_name": "org/two",
@@ -224,6 +277,14 @@ def test_initialize_database_creates_schema(tmp_path):
             )
         }
     assert tables == {"scan_runs", "repos", "controllers"}
+    with sqlite3.connect(db_path) as conn:
+        endpoint_tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='endpoints'"
+            )
+        }
+    assert endpoint_tables == {"endpoints"}
 
 
 def test_db_insert_scan_repo_controller_and_summary(tmp_path):
@@ -236,8 +297,16 @@ def test_db_insert_scan_repo_controller_and_summary(tmp_path):
             conn,
             repo_id,
             [
-                {"name": "A", "base_path": None, "type": "RestController"},
-                {"name": "B", "base_path": None, "type": "Controller"},
+                {
+                    "name": "A",
+                    "base_path": "/api",
+                    "type": "RestController",
+                    "endpoints": [
+                        {"http_method": "GET", "path": "/a"},
+                        {"http_method": "POST", "path": "/a"},
+                    ],
+                },
+                {"name": "B", "base_path": None, "type": "Controller", "endpoints": []},
             ],
         )
         conn.commit()
@@ -248,6 +317,7 @@ def test_db_insert_scan_repo_controller_and_summary(tmp_path):
     assert summary["total_rest_controllers"] == 1
     assert summary["total_controllers"] == 1
     assert summary["total_controller_files"] == 2
+    assert summary["total_endpoints"] == 2
     assert summary["repo_results"][0]["repo_name"] == "org/repo"
 
 
@@ -292,6 +362,7 @@ def test_main_success_prints_summary(monkeypatch, capsys):
                 "total_rest_controllers": 1,
                 "total_controllers": 0,
                 "total_controller_files": 1,
+                "total_endpoints": 1,
                 "repo_results": [
                     {
                         "repo_name": "org/repo",

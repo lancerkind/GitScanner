@@ -6,6 +6,7 @@ Useful for private repos or when code search API is limited.
 
 import argparse
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -24,6 +25,22 @@ import requests
 
 
 DB_FILE_NAME = "gitscanner.db"
+HTTP_METHOD_BY_ANNOTATION = {
+    "Get": "GET",
+    "Post": "POST",
+    "Put": "PUT",
+    "Delete": "DELETE",
+    "Patch": "PATCH",
+}
+MAPPING_ANNOTATION_PATTERN = re.compile(
+    r"@(?P<name>Get|Post|Put|Delete|Patch|Request)Mapping\s*\((?P<args>.*?)\)",
+    re.DOTALL,
+)
+PATH_NAMED_PATTERN = re.compile(r"\b(?:value|path)\s*=\s*\"([^\"]*)\"")
+PATH_ARRAY_PATTERN = re.compile(r"\b(?:value|path)\s*=\s*\{(?P<items>[^}]*)\}", re.DOTALL)
+STRING_LITERAL_PATTERN = re.compile(r'"([^\"]*)"')
+REQUEST_METHOD_PATTERN = re.compile(r"RequestMethod\.([A-Z]+)")
+
 SCHEMA_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS scan_runs (
@@ -47,6 +64,14 @@ SCHEMA_STATEMENTS = (
         name        TEXT,
         base_path   TEXT,
         type        TEXT CHECK(type IN ('RestController', 'Controller'))
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS endpoints (
+        id             INTEGER PRIMARY KEY,
+        controller_id  INTEGER REFERENCES controllers(id),
+        http_method    TEXT,
+        path           TEXT
     )
     """,
 )
@@ -165,9 +190,20 @@ def insert_repo(conn, scan_run_id, repo_name, url=None):
 
 
 def insert_controllers(conn, repo_id, controllers):
+    for item in controllers:
+        cursor = conn.execute(
+            "INSERT INTO controllers(repo_id, name, base_path, type) VALUES (?, ?, ?, ?)",
+            (repo_id, item["name"], item["base_path"], item["type"]),
+        )
+        insert_endpoints(conn, cursor.lastrowid, item.get("endpoints", []))
+
+
+def insert_endpoints(conn, controller_id, endpoints):
+    if not endpoints:
+        return
     conn.executemany(
-        "INSERT INTO controllers(repo_id, name, base_path, type) VALUES (?, ?, ?, ?)",
-        [(repo_id, item["name"], item["base_path"], item["type"]) for item in controllers],
+        "INSERT INTO endpoints(controller_id, http_method, path) VALUES (?, ?, ?)",
+        [(controller_id, item["http_method"], item["path"]) for item in endpoints],
     )
 
 
@@ -203,6 +239,16 @@ def build_summary_for_scan_run(conn, scan_run_id):
         """,
         (scan_run_id,),
     ).fetchone()[0]
+    total_endpoints = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM endpoints e
+        JOIN controllers c ON c.id = e.controller_id
+        JOIN repos r ON r.id = c.repo_id
+        WHERE r.scan_run_id = ?
+        """,
+        (scan_run_id,),
+    ).fetchone()[0]
     breakdown_rows = conn.execute(
         """
         SELECT
@@ -225,6 +271,7 @@ def build_summary_for_scan_run(conn, scan_run_id):
         "total_rest_controllers": total_rest_controllers,
         "total_controllers": total_controllers,
         "total_controller_files": total_rest_controllers + total_controllers,
+        "total_endpoints": total_endpoints,
         "repo_results": [
             {
                 "repo_name": row[0],
@@ -247,25 +294,92 @@ def count_controllers_in_directory(directory):
                 content = f.read()
 
                 if "@RestController" in content:
+                    base_path, endpoints = extract_controller_mappings(content)
                     controllers.append(
                         {
                             "name": java_file.stem,
-                            "base_path": None,
+                            "base_path": base_path,
                             "type": "RestController",
+                            "endpoints": endpoints,
                         }
                     )
                 elif "@Controller" in content:
+                    base_path, endpoints = extract_controller_mappings(content)
                     controllers.append(
                         {
                             "name": java_file.stem,
-                            "base_path": None,
+                            "base_path": base_path,
                             "type": "Controller",
+                            "endpoints": endpoints,
                         }
                     )
         except Exception:
             continue
 
     return controllers
+
+
+def extract_controller_mappings(content):
+    class_index = content.find("class ")
+    class_level_request_mapping = None
+    matches = list(MAPPING_ANNOTATION_PATTERN.finditer(content))
+    if class_index >= 0:
+        request_mappings_before_class = [
+            match
+            for match in matches
+            if match.group("name") == "Request" and match.end() <= class_index
+        ]
+        if request_mappings_before_class:
+            class_level_request_mapping = request_mappings_before_class[-1]
+
+    base_path = None
+    if class_level_request_mapping:
+        paths = extract_paths_from_annotation_args(class_level_request_mapping.group("args"))
+        if paths:
+            base_path = paths[0]
+
+    endpoints = []
+    for match in matches:
+        if class_level_request_mapping and match.span() == class_level_request_mapping.span():
+            continue
+        endpoints.extend(build_endpoints_from_annotation(match.group("name"), match.group("args")))
+
+    return base_path, endpoints
+
+
+def extract_paths_from_annotation_args(annotation_args):
+    array_match = PATH_ARRAY_PATTERN.search(annotation_args)
+    if array_match:
+        return [path for path in STRING_LITERAL_PATTERN.findall(array_match.group("items"))]
+
+    paths = PATH_NAMED_PATTERN.findall(annotation_args)
+    if paths:
+        return paths
+
+    stripped_args = annotation_args.strip()
+    unnamed_paths = []
+    if stripped_args.startswith('"'):
+        unnamed_paths = STRING_LITERAL_PATTERN.findall(stripped_args)
+    if unnamed_paths:
+        return unnamed_paths
+
+    return [None]
+
+
+def build_endpoints_from_annotation(mapping_name, annotation_args):
+    paths = extract_paths_from_annotation_args(annotation_args)
+    if mapping_name == "Request":
+        methods = REQUEST_METHOD_PATTERN.findall(annotation_args) or ["ANY"]
+        return [
+            {"http_method": method, "path": path}
+            for path in paths
+            for method in methods
+        ]
+
+    return [
+        {"http_method": HTTP_METHOD_BY_ANNOTATION[mapping_name], "path": path}
+        for path in paths
+    ]
 
 
 def build_clone_url(repo_full_name, provider="github", token=None):
@@ -338,6 +452,7 @@ def format_summary_lines(stats):
         f"\nTotal @RestController files: {stats['total_rest_controllers']}",
         f"Total @Controller files: {stats['total_controllers']}",
         f"Total Controller files: {stats['total_controller_files']}",
+        f"Total endpoints: {stats['total_endpoints']}",
     ]
 
     if stats["repo_results"]:
