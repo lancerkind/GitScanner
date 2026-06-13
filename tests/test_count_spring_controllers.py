@@ -140,7 +140,13 @@ def test_count_controllers_in_directory_extracts_base_path_and_endpoints(tmp_pat
         @RequestMapping(path = "/api/cats")
         class CatController {
             @GetMapping("/{id}")
-            Cat getById() {}
+            Cat getById(
+                @PathVariable Long id,
+                @RequestParam(value="status", required=false, defaultValue="active") String status,
+                @RequestHeader("Authorization") String authorization,
+                @RequestBody OrderRequest body,
+                HttpServletRequest request
+            ) {}
 
             @RequestMapping(value = "/x", method = RequestMethod.POST)
             void postX() {}
@@ -158,9 +164,23 @@ def test_count_controllers_in_directory_extracts_base_path_and_endpoints(tmp_pat
     assert controller["base_path"] == "/api/cats"
     assert controller["type"] == "RestController"
     assert controller["endpoints"] == [
-        {"http_method": "GET", "path": "/{id}"},
-        {"http_method": "POST", "path": "/x"},
-        {"http_method": "ANY", "path": "/any"},
+        {
+            "http_method": "GET",
+            "path": "/{id}",
+            "parameters": [
+                {"name": "id", "java_type": "Long", "source": "PATH", "required": True},
+                {"name": "status", "java_type": "String", "source": "QUERY", "required": False},
+                {
+                    "name": "Authorization",
+                    "java_type": "String",
+                    "source": "HEADER",
+                    "required": False,
+                },
+                {"name": "body", "java_type": "OrderRequest", "source": "BODY", "required": True},
+            ],
+        },
+        {"http_method": "POST", "path": "/x", "parameters": []},
+        {"http_method": "ANY", "path": "/any", "parameters": []},
     ]
 
 
@@ -170,7 +190,7 @@ def test_count_controllers_in_directory_supports_multiple_request_methods(tmp_pa
         @Controller
         class MultiController {
             @RequestMapping(path = "/m", method = {RequestMethod.GET, RequestMethod.DELETE})
-            String method() { return "ok"; }
+            String method(@RequestParam("status") String status) { return "ok"; }
         }
         """,
         encoding="utf-8",
@@ -178,8 +198,49 @@ def test_count_controllers_in_directory_supports_multiple_request_methods(tmp_pa
 
     controllers = count_controllers_in_directory(tmp_path)
     assert controllers[0]["endpoints"] == [
-        {"http_method": "GET", "path": "/m"},
-        {"http_method": "DELETE", "path": "/m"},
+        {
+            "http_method": "GET",
+            "path": "/m",
+            "parameters": [
+                {"name": "status", "java_type": "String", "source": "QUERY", "required": False}
+            ],
+        },
+        {
+            "http_method": "DELETE",
+            "path": "/m",
+            "parameters": [
+                {"name": "status", "java_type": "String", "source": "QUERY", "required": False}
+            ],
+        },
+    ]
+
+
+def test_count_controllers_in_directory_extracts_annotation_variants_and_generic_types(tmp_path):
+    (tmp_path / "OrderController.java").write_text(
+        """
+        @RestController
+        class OrderController {
+            @PutMapping("/orders/{id}")
+            void update(
+                @PathVariable("id") Long orderId,
+                @RequestParam(name="page", required=true) Integer page,
+                @RequestHeader(value="X-Trace") String trace,
+                @CookieValue("sid") String sessionId,
+                @RequestBody List<String> values,
+                Model model
+            ) {}
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    controllers = count_controllers_in_directory(tmp_path)
+    assert controllers[0]["endpoints"][0]["parameters"] == [
+        {"name": "id", "java_type": "Long", "source": "PATH", "required": True},
+        {"name": "page", "java_type": "Integer", "source": "QUERY", "required": True},
+        {"name": "X-Trace", "java_type": "String", "source": "HEADER", "required": False},
+        {"name": "sid", "java_type": "String", "source": "COOKIE", "required": False},
+        {"name": "values", "java_type": "List<String>", "source": "BODY", "required": True},
     ]
 
 
@@ -273,10 +334,10 @@ def test_initialize_database_creates_schema(tmp_path):
         tables = {
             row[0]
             for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('scan_runs','repos','controllers')"
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('scan_runs','repos','controllers','parameters')"
             )
         }
-    assert tables == {"scan_runs", "repos", "controllers"}
+    assert tables == {"scan_runs", "repos", "controllers", "parameters"}
     with sqlite3.connect(db_path) as conn:
         endpoint_tables = {
             row[0]
@@ -302,7 +363,13 @@ def test_db_insert_scan_repo_controller_and_summary(tmp_path):
                     "base_path": "/api",
                     "type": "RestController",
                     "endpoints": [
-                        {"http_method": "GET", "path": "/a"},
+                        {
+                            "http_method": "GET",
+                            "path": "/a",
+                            "parameters": [
+                                {"name": "id", "java_type": "Long", "source": "PATH", "required": True}
+                            ],
+                        },
                         {"http_method": "POST", "path": "/a"},
                     ],
                 },
@@ -319,6 +386,9 @@ def test_db_insert_scan_repo_controller_and_summary(tmp_path):
     assert summary["total_controller_files"] == 2
     assert summary["total_endpoints"] == 2
     assert summary["repo_results"][0]["repo_name"] == "org/repo"
+    with sqlite3.connect(db_path) as conn:
+        parameters = conn.execute("SELECT name, java_type, source, required FROM parameters").fetchall()
+    assert parameters == [("id", "Long", "PATH", 1)]
 
 
 def test_clone_and_count_wraps_timeout(monkeypatch):

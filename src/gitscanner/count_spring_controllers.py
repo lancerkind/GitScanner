@@ -40,6 +40,19 @@ PATH_NAMED_PATTERN = re.compile(r"\b(?:value|path)\s*=\s*\"([^\"]*)\"")
 PATH_ARRAY_PATTERN = re.compile(r"\b(?:value|path)\s*=\s*\{(?P<items>[^}]*)\}", re.DOTALL)
 STRING_LITERAL_PATTERN = re.compile(r'"([^\"]*)"')
 REQUEST_METHOD_PATTERN = re.compile(r"RequestMethod\.([A-Z]+)")
+SUPPORTED_PARAMETER_SOURCE_BY_ANNOTATION = {
+    "PathVariable": "PATH",
+    "RequestParam": "QUERY",
+    "RequestHeader": "HEADER",
+    "RequestBody": "BODY",
+    "CookieValue": "COOKIE",
+}
+SUPPORTED_PARAMETER_ANNOTATION_PATTERN = re.compile(
+    r"@(?P<name>PathVariable|RequestParam|RequestHeader|RequestBody|CookieValue)\s*(?:\((?P<args>.*?)\))?",
+    re.DOTALL,
+)
+REQUIRED_ATTRIBUTE_PATTERN = re.compile(r"\brequired\s*=\s*(true|false)")
+NAME_ATTRIBUTE_PATTERN = re.compile(r"\b(?:value|name)\s*=\s*\"([^\"]+)\"")
 
 SCHEMA_STATEMENTS = (
     """
@@ -72,6 +85,16 @@ SCHEMA_STATEMENTS = (
         controller_id  INTEGER REFERENCES controllers(id),
         http_method    TEXT,
         path           TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS parameters (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        endpoint_id   INTEGER NOT NULL REFERENCES endpoints(id),
+        name          TEXT NOT NULL,
+        java_type     TEXT NOT NULL,
+        source        TEXT NOT NULL,
+        required      BOOLEAN NOT NULL
     )
     """,
 )
@@ -201,9 +224,26 @@ def insert_controllers(conn, repo_id, controllers):
 def insert_endpoints(conn, controller_id, endpoints):
     if not endpoints:
         return
+    for item in endpoints:
+        cursor = conn.execute(
+            "INSERT INTO endpoints(controller_id, http_method, path) VALUES (?, ?, ?)",
+            (controller_id, item["http_method"], item["path"]),
+        )
+        insert_parameters(conn, cursor.lastrowid, item.get("parameters", []))
+
+
+def insert_parameters(conn, endpoint_id, parameters):
+    if not parameters:
+        return
     conn.executemany(
-        "INSERT INTO endpoints(controller_id, http_method, path) VALUES (?, ?, ?)",
-        [(controller_id, item["http_method"], item["path"]) for item in endpoints],
+        """
+        INSERT INTO parameters(endpoint_id, name, java_type, source, required)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (endpoint_id, item["name"], item["java_type"], item["source"], item["required"])
+            for item in parameters
+        ],
     )
 
 
@@ -342,7 +382,11 @@ def extract_controller_mappings(content):
     for match in matches:
         if class_level_request_mapping and match.span() == class_level_request_mapping.span():
             continue
-        endpoints.extend(build_endpoints_from_annotation(match.group("name"), match.group("args")))
+        mapping_endpoints = build_endpoints_from_annotation(match.group("name"), match.group("args"))
+        parameters = extract_endpoint_parameters(content, match.end())
+        for endpoint in mapping_endpoints:
+            endpoint["parameters"] = list(parameters)
+        endpoints.extend(mapping_endpoints)
 
     return base_path, endpoints
 
@@ -380,6 +424,148 @@ def build_endpoints_from_annotation(mapping_name, annotation_args):
         {"http_method": HTTP_METHOD_BY_ANNOTATION[mapping_name], "path": path}
         for path in paths
     ]
+
+
+def find_matching_closing_parenthesis(content, opening_index):
+    depth = 0
+    for index in range(opening_index, len(content)):
+        char = content[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def split_top_level_commas(content):
+    parts = []
+    current = []
+    angle_depth = 0
+    paren_depth = 0
+    brace_depth = 0
+    bracket_depth = 0
+    in_string = False
+
+    for char in content:
+        if char == '"':
+            in_string = not in_string
+            current.append(char)
+            continue
+
+        if not in_string:
+            if char == "<":
+                angle_depth += 1
+            elif char == ">" and angle_depth > 0:
+                angle_depth -= 1
+            elif char == "(":
+                paren_depth += 1
+            elif char == ")" and paren_depth > 0:
+                paren_depth -= 1
+            elif char == "{":
+                brace_depth += 1
+            elif char == "}" and brace_depth > 0:
+                brace_depth -= 1
+            elif char == "[":
+                bracket_depth += 1
+            elif char == "]" and bracket_depth > 0:
+                bracket_depth -= 1
+            elif (
+                char == ","
+                and angle_depth == 0
+                and paren_depth == 0
+                and brace_depth == 0
+                and bracket_depth == 0
+            ):
+                part = "".join(current).strip()
+                if part:
+                    parts.append(part)
+                current = []
+                continue
+
+        current.append(char)
+
+    last_part = "".join(current).strip()
+    if last_part:
+        parts.append(last_part)
+    return parts
+
+
+def extract_parameter_name(annotation_args, java_parameter_name):
+    if not annotation_args:
+        return java_parameter_name
+
+    explicit_name = NAME_ATTRIBUTE_PATTERN.search(annotation_args)
+    if explicit_name:
+        return explicit_name.group(1)
+
+    stripped_args = annotation_args.strip()
+    if stripped_args.startswith('"'):
+        unnamed_paths = STRING_LITERAL_PATTERN.findall(stripped_args)
+        if unnamed_paths:
+            return unnamed_paths[0]
+
+    return java_parameter_name
+
+
+def extract_parameter_required(source, annotation_args):
+    if source in {"PATH", "BODY"}:
+        return True
+
+    if not annotation_args:
+        return False
+
+    required_match = REQUIRED_ATTRIBUTE_PATTERN.search(annotation_args)
+    if required_match:
+        return required_match.group(1) == "true"
+
+    return False
+
+
+def build_parameter_from_definition(parameter_definition):
+    annotation_match = SUPPORTED_PARAMETER_ANNOTATION_PATTERN.search(parameter_definition)
+    if not annotation_match:
+        return None
+
+    source = SUPPORTED_PARAMETER_SOURCE_BY_ANNOTATION[annotation_match.group("name")]
+    annotation_args = annotation_match.group("args")
+    stripped_definition = SUPPORTED_PARAMETER_ANNOTATION_PATTERN.sub(" ", parameter_definition)
+    stripped_definition = re.sub(r"\bfinal\b", " ", stripped_definition)
+    stripped_definition = re.sub(r"\s+", " ", stripped_definition).strip()
+    java_parameter_match = re.search(r"(?P<java_type>.+?)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)$", stripped_definition)
+    if not java_parameter_match:
+        return None
+
+    java_type = java_parameter_match.group("java_type").strip()
+    java_name = java_parameter_match.group("name")
+    return {
+        "name": extract_parameter_name(annotation_args, java_name),
+        "java_type": java_type,
+        "source": source,
+        "required": extract_parameter_required(source, annotation_args),
+    }
+
+
+def extract_endpoint_parameters(content, mapping_end_index):
+    opening_parenthesis_index = content.find("(", mapping_end_index)
+    if opening_parenthesis_index < 0:
+        return []
+
+    closing_parenthesis_index = find_matching_closing_parenthesis(content, opening_parenthesis_index)
+    if closing_parenthesis_index < 0:
+        return []
+
+    raw_parameters = content[opening_parenthesis_index + 1:closing_parenthesis_index]
+    if not raw_parameters.strip():
+        return []
+
+    parameters = []
+    for parameter_definition in split_top_level_commas(raw_parameters):
+        parameter = build_parameter_from_definition(parameter_definition)
+        if parameter:
+            parameters.append(parameter)
+    return parameters
 
 
 def build_clone_url(repo_full_name, provider="github", token=None):
