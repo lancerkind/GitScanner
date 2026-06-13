@@ -157,7 +157,7 @@ def build_parser():
     )
     parser.add_argument(
         "API_BASE_URL",
-        help="Base GitHub REST **API** URL (e.g., https://api.github.com)",
+        help="Base REST **API** URL (e.g., https://api.github.com or http://gitlab.com/api/v4)",
     )
     parser.add_argument("ORG", help="Organization name (login)")
     parser.add_argument(
@@ -250,11 +250,11 @@ def fetch_github_repos(api_base_url, org, headers=None, get=requests.get):
             else:
                 break
 
-    except Timeout as exc:
+    except Timeout:
         _raise_timeout_error(base_url)
-    except ConnectionError as exc:
+    except ConnectionError:
         _raise_connectivity_error(base_url)
-    except requests.exceptions.RequestException as exc:
+    except requests.exceptions.RequestException:
         _raise_connectivity_error(base_url)
 
     return repos
@@ -398,11 +398,11 @@ def fetch_gitlab_repos(api_base_url, org, headers=None, get=requests.get):
         if group_repos is not None:
             return group_repos
         return _fetch_gitlab_user_projects(base_url, org, headers, get)
-    except Timeout as exc:
+    except Timeout:
         _raise_timeout_error(base_url)
-    except ConnectionError as exc:
+    except ConnectionError:
         _raise_connectivity_error(base_url)
-    except requests.exceptions.RequestException as exc:
+    except requests.exceptions.RequestException:
         _raise_connectivity_error(base_url)
 
     return []
