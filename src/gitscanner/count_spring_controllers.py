@@ -53,6 +53,7 @@ SUPPORTED_PARAMETER_ANNOTATION_PATTERN = re.compile(
 )
 REQUIRED_ATTRIBUTE_PATTERN = re.compile(r"\brequired\s*=\s*(true|false)")
 NAME_ATTRIBUTE_PATTERN = re.compile(r"\b(?:value|name)\s*=\s*\"([^\"]+)\"")
+KARATE_PATH_PATTERN = re.compile(r"/\S+")
 
 SCHEMA_STATEMENTS = (
     """
@@ -95,6 +96,22 @@ SCHEMA_STATEMENTS = (
         java_type     TEXT NOT NULL,
         source        TEXT NOT NULL,
         required      BOOLEAN NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS karate_feature_files (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        repo_id         INTEGER NOT NULL REFERENCES repos(id),
+        controller_id   INTEGER REFERENCES controllers(id),
+        file_path       TEXT NOT NULL,
+        file_name       TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS karate_paths (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        feature_file_id INTEGER NOT NULL REFERENCES karate_feature_files(id),
+        path            TEXT NOT NULL
     )
     """,
 )
@@ -247,6 +264,103 @@ def insert_parameters(conn, endpoint_id, parameters):
     )
 
 
+def delete_repo_karate_data(conn, repo_id):
+    conn.execute(
+        """
+        DELETE FROM karate_paths
+        WHERE feature_file_id IN (
+            SELECT id FROM karate_feature_files WHERE repo_id = ?
+        )
+        """,
+        (repo_id,),
+    )
+    conn.execute("DELETE FROM karate_feature_files WHERE repo_id = ?", (repo_id,))
+
+
+def insert_karate_feature_file(conn, repo_id, controller_id, file_path, file_name):
+    cursor = conn.execute(
+        """
+        INSERT INTO karate_feature_files(repo_id, controller_id, file_path, file_name)
+        VALUES (?, ?, ?, ?)
+        """,
+        (repo_id, controller_id, file_path, file_name),
+    )
+    return cursor.lastrowid
+
+
+def insert_karate_paths(conn, feature_file_id, paths):
+    if not paths:
+        return
+    conn.executemany(
+        "INSERT INTO karate_paths(feature_file_id, path) VALUES (?, ?)",
+        [(feature_file_id, item) for item in paths],
+    )
+
+
+def find_controller_id_for_feature_file(file_path, controller_id_by_name):
+    for segment in Path(file_path).parts:
+        controller_id = controller_id_by_name.get(segment)
+        if controller_id is not None:
+            return controller_id
+    return None
+
+
+def extract_karate_paths(content):
+    seen_paths = []
+    seen_set = set()
+    for match in KARATE_PATH_PATTERN.finditer(content):
+        candidate = match.group(0)
+        start_index = match.start()
+        if start_index >= 1 and content[start_index - 1] == ":":
+            continue
+        if candidate.endswith("'") or candidate.endswith('"'):
+            candidate = candidate[:-1]
+        if candidate.endswith(","):
+            candidate = candidate[:-1]
+        if not candidate or candidate in seen_set:
+            continue
+        seen_set.add(candidate)
+        seen_paths.append(candidate)
+    return seen_paths
+
+
+def collect_karate_feature_files(directory):
+    test_root = Path(directory) / "src" / "test" / "java"
+    if not test_root.exists() or not test_root.is_dir():
+        return []
+    return sorted(test_root.rglob("*.feature"))
+
+
+def insert_karate_data_for_repo(conn, repo_id, repo_root):
+    controller_rows = conn.execute(
+        "SELECT id, name FROM controllers WHERE repo_id = ?",
+        (repo_id,),
+    ).fetchall()
+    controller_id_by_name = {name: controller_id for controller_id, name in controller_rows}
+
+    feature_files = collect_karate_feature_files(repo_root)
+    inserted_count = 0
+    for feature_file in feature_files:
+        try:
+            content = feature_file.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        relative_path = str(feature_file.relative_to(repo_root)).replace("\\", "/")
+        controller_id = find_controller_id_for_feature_file(relative_path, controller_id_by_name)
+        feature_file_id = insert_karate_feature_file(
+            conn,
+            repo_id,
+            controller_id,
+            relative_path,
+            feature_file.name,
+        )
+        insert_karate_paths(conn, feature_file_id, extract_karate_paths(content))
+        inserted_count += 1
+
+    return inserted_count
+
+
 def build_summary_for_scan_run(conn, scan_run_id):
     total_repos_scanned = conn.execute(
         "SELECT COUNT(*) FROM repos WHERE scan_run_id = ?",
@@ -289,15 +403,26 @@ def build_summary_for_scan_run(conn, scan_run_id):
         """,
         (scan_run_id,),
     ).fetchone()[0]
+    total_feature_files = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM karate_feature_files k
+        JOIN repos r ON r.id = k.repo_id
+        WHERE r.scan_run_id = ?
+        """,
+        (scan_run_id,),
+    ).fetchone()[0]
     breakdown_rows = conn.execute(
         """
         SELECT
             r.name,
             SUM(CASE WHEN c.type = 'RestController' THEN 1 ELSE 0 END) AS rest_count,
             SUM(CASE WHEN c.type = 'Controller' THEN 1 ELSE 0 END) AS controller_count,
-            COUNT(*) AS total_count
+            COUNT(c.id) AS total_count,
+            COUNT(DISTINCT k.id) AS feature_file_count
         FROM repos r
-        JOIN controllers c ON c.repo_id = r.id
+        LEFT JOIN controllers c ON c.repo_id = r.id
+        LEFT JOIN karate_feature_files k ON k.repo_id = r.id
         WHERE r.scan_run_id = ?
         GROUP BY r.id, r.name
         ORDER BY total_count DESC, r.name ASC
@@ -312,12 +437,14 @@ def build_summary_for_scan_run(conn, scan_run_id):
         "total_controllers": total_controllers,
         "total_controller_files": total_rest_controllers + total_controllers,
         "total_endpoints": total_endpoints,
+        "total_feature_files": total_feature_files,
         "repo_results": [
             {
                 "repo_name": row[0],
                 "total_at_rest_controllers": row[1],
                 "total_at_controllers": row[2],
                 "total_rest_controllers": row[3],
+                "total_feature_files": row[4],
             }
             for row in breakdown_rows
         ],
@@ -582,7 +709,7 @@ def build_clone_url(repo_full_name, provider="github", token=None):
 
 
 def clone_and_count(repo_full_name, provider="github", token=None, run=subprocess.run):
-    """Clone a repo temporarily and collect controllers."""
+    """Clone a repo temporarily and collect controllers and Karate data source path."""
     clone_url = build_clone_url(repo_full_name, provider=provider, token=token)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -598,7 +725,10 @@ def clone_and_count(repo_full_name, provider="github", token=None, run=subproces
             if result.returncode != 0:
                 raise RuntimeError(f"Clone failed: {result.stderr.strip()}")
 
-            return count_controllers_in_directory(tmpdir)
+            return {
+                "controllers": count_controllers_in_directory(tmpdir),
+                "repo_path": tmpdir,
+            }
 
         except subprocess.TimeoutExpired:
             raise RuntimeError("Clone timeout")
@@ -620,11 +750,20 @@ def process_repositories(
         scan_run_id = create_scan_run(conn)
 
         for repo_name in repos:
-            controllers = clone_and_count_func(repo_name, provider=provider, token=token)
+            scan_result = clone_and_count_func(repo_name, provider=provider, token=token)
+            if isinstance(scan_result, dict):
+                controllers = scan_result.get("controllers", [])
+                repo_path = scan_result.get("repo_path")
+            else:
+                controllers = scan_result
+                repo_path = None
             with conn:
                 repo_id = insert_repo(conn, scan_run_id, repo_name, url=build_clone_url(repo_name, provider, token))
                 if controllers:
                     insert_controllers(conn, repo_id, controllers)
+                delete_repo_karate_data(conn, repo_id)
+                if repo_path:
+                    insert_karate_data_for_repo(conn, repo_id, repo_path)
 
         return scan_run_id, build_summary_for_scan_run(conn, scan_run_id)
 
@@ -639,6 +778,7 @@ def format_summary_lines(stats):
         f"Total @Controller files: {stats['total_controllers']}",
         f"Total Controller files: {stats['total_controller_files']}",
         f"Total endpoints: {stats['total_endpoints']}",
+        f"Total feature files: {stats['total_feature_files']}",
     ]
 
     if stats["repo_results"]:
@@ -648,7 +788,10 @@ def format_summary_lines(stats):
             "-" * 70,
         ])
         for result in stats["repo_results"]:
-            lines.append(f"{result['repo_name']:50} {result['total_rest_controllers']:3} controllers")
+            lines.append(
+                f"{result['repo_name']:50} {result['total_rest_controllers']:3} controllers"
+                f" {result['total_feature_files']:3} feature files"
+            )
 
     return lines
 

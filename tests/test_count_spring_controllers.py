@@ -12,9 +12,12 @@ from gitscanner.count_spring_controllers import (
     build_gitlab_token,
     build_github_headers,
     build_summary_for_scan_run,
+    collect_karate_feature_files,
     count_controllers_in_directory,
     create_scan_run,
+    extract_karate_paths,
     format_summary_lines,
+    insert_karate_data_for_repo,
     initialize_database,
     insert_controllers,
     insert_repo,
@@ -290,11 +293,12 @@ def test_process_repositories_aggregates_totals_and_filters_zero_repos():
     assert stats["total_rest_controllers"] == 2
     assert stats["total_controllers"] == 4
     assert stats["total_controller_files"] == 6
-    assert [item["repo_name"] for item in stats["repo_results"]] == ["org/a", "org/c"]
+    assert [item["repo_name"] for item in stats["repo_results"]] == ["org/a", "org/c", "org/b"]
     assert stats["repo_results"][0]["total_at_rest_controllers"] == 2
     assert stats["repo_results"][0]["total_at_controllers"] == 1
     assert stats["repo_results"][0]["total_rest_controllers"] == 3
     assert stats["total_endpoints"] == 2
+    assert stats["total_feature_files"] == 0
 
 
 def test_format_summary_lines_includes_sorted_breakdown():
@@ -305,26 +309,31 @@ def test_format_summary_lines_includes_sorted_breakdown():
         "total_controllers": 3,
         "total_controller_files": 5,
         "total_endpoints": 7,
+        "total_feature_files": 4,
         "repo_results": [
             {
                 "repo_name": "org/two",
                 "total_at_rest_controllers": 1,
                 "total_at_controllers": 3,
                 "total_rest_controllers": 4,
+                "total_feature_files": 3,
             },
             {
                 "repo_name": "org/one",
                 "total_at_rest_controllers": 1,
                 "total_at_controllers": 0,
                 "total_rest_controllers": 1,
+                "total_feature_files": 1,
             },
         ],
     }
 
     lines = format_summary_lines(stats)
     assert any("Repositories with controllers: 2/3" in line for line in lines)
+    assert any("Total feature files: 4" in line for line in lines)
     joined = "\n".join(lines)
     assert joined.index("org/two") < joined.index("org/one")
+    assert "4 controllers   3 feature files" in joined
 
 
 def test_initialize_database_creates_schema(tmp_path):
@@ -342,10 +351,10 @@ def test_initialize_database_creates_schema(tmp_path):
         endpoint_tables = {
             row[0]
             for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='endpoints'"
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('endpoints','karate_feature_files','karate_paths')"
             )
         }
-    assert endpoint_tables == {"endpoints"}
+    assert endpoint_tables == {"endpoints", "karate_feature_files", "karate_paths"}
 
 
 def test_db_insert_scan_repo_controller_and_summary(tmp_path):
@@ -385,10 +394,100 @@ def test_db_insert_scan_repo_controller_and_summary(tmp_path):
     assert summary["total_controllers"] == 1
     assert summary["total_controller_files"] == 2
     assert summary["total_endpoints"] == 2
+    assert summary["total_feature_files"] == 0
     assert summary["repo_results"][0]["repo_name"] == "org/repo"
     with sqlite3.connect(db_path) as conn:
         parameters = conn.execute("SELECT name, java_type, source, required FROM parameters").fetchall()
     assert parameters == [("id", "Long", "PATH", 1)]
+
+
+def test_collect_karate_feature_files_scans_only_src_test_java(tmp_path):
+    expected = tmp_path / "src" / "test" / "java" / "com" / "example" / "CatController" / "cat.feature"
+    expected.parent.mkdir(parents=True)
+    expected.write_text("Feature: cats", encoding="utf-8")
+    ignored = tmp_path / "src" / "test" / "resources" / "CatController" / "ignored.feature"
+    ignored.parent.mkdir(parents=True)
+    ignored.write_text("Feature: ignored", encoding="utf-8")
+
+    feature_files = collect_karate_feature_files(tmp_path)
+    assert feature_files == [expected]
+
+
+def test_extract_karate_paths_extracts_distinct_non_url_paths():
+    content = """
+    * path '/cats'
+    * path '/cats/{id}'
+    Given url 'https://api.example.com'
+    And path '/cats/#(catId)'
+    And path '/cats'
+    """
+
+    paths = extract_karate_paths(content)
+    assert paths == ["/cats", "/cats/{id}", "/cats/#(catId)"]
+
+
+def test_insert_karate_data_for_repo_stores_controller_mapping_and_paths(tmp_path):
+    repo_root = tmp_path / "repo"
+    feature_under_controller = repo_root / "src" / "test" / "java" / "com" / "example" / "CatController" / "get_cat.feature"
+    feature_under_controller.parent.mkdir(parents=True)
+    feature_under_controller.write_text("""
+Feature: Cat tests
+  Scenario: fetch cat
+    Given path '/cats/{id}'
+    And path '/cats/{id}'
+""", encoding="utf-8")
+    feature_without_controller = repo_root / "src" / "test" / "java" / "misc" / "orphan.feature"
+    feature_without_controller.parent.mkdir(parents=True)
+    feature_without_controller.write_text("Feature: orphan", encoding="utf-8")
+
+    with sqlite3.connect(":memory:") as conn:
+        initialize_database(conn)
+        scan_run_id = create_scan_run(conn)
+        repo_id = insert_repo(conn, scan_run_id, "org/repo", "https://example/repo.git")
+        insert_controllers(
+            conn,
+            repo_id,
+            [{"name": "CatController", "base_path": "/cats", "type": "RestController", "endpoints": []}],
+        )
+        inserted_count = insert_karate_data_for_repo(conn, repo_id, repo_root)
+        conn.commit()
+
+        assert inserted_count == 2
+        rows = conn.execute(
+            """
+            SELECT k.file_name, c.name, p.path
+            FROM karate_feature_files k
+            LEFT JOIN controllers c ON c.id = k.controller_id
+            LEFT JOIN karate_paths p ON p.feature_file_id = k.id
+            ORDER BY k.file_name, p.path
+            """
+        ).fetchall()
+
+    assert rows == [
+        ("get_cat.feature", "CatController", "/cats/{id}"),
+        ("orphan.feature", None, None),
+    ]
+
+
+def test_process_repositories_includes_karate_feature_files(tmp_path):
+    def fake_clone_and_count(repo_name, provider="github", token=None):
+        repo_root = tmp_path / repo_name.replace("/", "_")
+        feature = repo_root / "src" / "test" / "java" / "com" / "example" / "CatController" / "cat.feature"
+        feature.parent.mkdir(parents=True, exist_ok=True)
+        feature.write_text("Given path '/cats'", encoding="utf-8")
+        return {
+            "controllers": [{"name": "CatController", "base_path": "/cats", "type": "RestController", "endpoints": []}],
+            "repo_path": str(repo_root),
+        }
+
+    _, stats = process_repositories(
+        ["org/repo"],
+        db_path=":memory:",
+        clone_and_count_func=fake_clone_and_count,
+    )
+
+    assert stats["total_feature_files"] == 1
+    assert stats["repo_results"][0]["total_feature_files"] == 1
 
 
 def test_clone_and_count_wraps_timeout(monkeypatch):
@@ -433,12 +532,14 @@ def test_main_success_prints_summary(monkeypatch, capsys):
                 "total_controllers": 0,
                 "total_controller_files": 1,
                 "total_endpoints": 1,
+                "total_feature_files": 0,
                 "repo_results": [
                     {
                         "repo_name": "org/repo",
                         "total_at_rest_controllers": 1,
                         "total_at_controllers": 0,
                         "total_rest_controllers": 1,
+                        "total_feature_files": 0,
                     }
                 ],
             },
