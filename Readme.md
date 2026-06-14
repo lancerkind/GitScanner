@@ -127,6 +127,33 @@ mycompany/user-service                              8 controllers
 ...
 ```
 
+## SQLite schema and reporting
+
+Scanner results are stored in a local SQLite database (`gitscanner.db`).
+
+### Schema overview
+
+- `controllers` stores controller classes discovered in each repository.
+- `endpoints` stores endpoint details (for example HTTP method and path) linked to each controller.
+- `parameters` stores endpoint parameter details (name, Java type, source, and required/optional) linked to each endpoint.
+- `karate_feature_files` stores discovered Karate `.feature` files per repository, optionally linked to a controller when one can be inferred from the path.
+- `karate_paths` stores distinct API paths extracted from each Karate feature file and linked to `karate_feature_files`.
+
+This schema is designed so the scanner focuses on collecting structured data, while reporting can evolve independently.
+
+### Karate reporting schema notes
+
+- Karate reporting is based on the relationship `repositories -> karate_feature_files -> karate_paths`.
+- This allows reports such as:
+  - feature-file coverage by repository/controller
+  - extracted API path inventory from Karate scenarios
+  - comparison between scanned Spring endpoints and Karate-referenced paths
+
+### Reporting approach
+
+- Detailed, polished reporting will be built in a separate reporting tool that reads from the SQLite database.
+- You can also build your own custom reports directly from `gitscanner.db` using standard SQLite queries.
+
 ## Managing Your Repository List
 
 **Add comments for organization:**
