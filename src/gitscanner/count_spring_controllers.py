@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from collections import defaultdict
 
 # suppress OpenSSL warnings
 import warnings
@@ -54,6 +55,8 @@ SUPPORTED_PARAMETER_ANNOTATION_PATTERN = re.compile(
 REQUIRED_ATTRIBUTE_PATTERN = re.compile(r"\brequired\s*=\s*(true|false)")
 NAME_ATTRIBUTE_PATTERN = re.compile(r"\b(?:value|name)\s*=\s*\"([^\"]+)\"")
 KARATE_PATH_PATTERN = re.compile(r"/\S+")
+JAVA_SERVICE_TYPE_PATTERN = re.compile(r"\b([A-Z][A-Za-z0-9_]*Service)\b")
+INLINE_YAML_PATTERN = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*:\s*(.+?)\s*$")
 
 SCHEMA_STATEMENTS = (
     """
@@ -114,7 +117,67 @@ SCHEMA_STATEMENTS = (
         path            TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS repo_datasources (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        repo_id         INTEGER NOT NULL REFERENCES repos(id),
+        source_file     TEXT NOT NULL,
+        url             TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS controller_services (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        controller_id   INTEGER NOT NULL REFERENCES controllers(id),
+        service_name    TEXT NOT NULL,
+        found           BOOLEAN NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS service_dependency_markers (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        controller_service_id INTEGER NOT NULL REFERENCES controller_services(id),
+        marker                TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS dependency_classifications (
+        marker          TEXT PRIMARY KEY,
+        dependency_type TEXT NOT NULL
+    )
+    """,
 )
+
+
+def get_default_classifications():
+    return [
+        ("JdbcTemplate", "SQL Database"),
+        ("JpaRepository", "SQL Database"),
+        ("CrudRepository", "SQL Database"),
+        ("SpannerTemplate", "Spanner"),
+        ("SpannerRepository", "Spanner"),
+        ("KafkaTemplate", "Kafka"),
+        ("KafkaListener", "Kafka"),
+        ("RestTemplate", "API"),
+        ("WebClient", "API"),
+        ("FeignClient", "API"),
+        ("jdbc:oracle:", "Oracle"),
+        ("jdbc:postgresql:", "CloudSQL"),
+        ("cloudsql", "CloudSQL"),
+        ("jdbc:mysql:", "CloudSQL"),
+        ("jdbc:h2:", "H2"),
+        ("jdbc:sqlserver:", "SQL Server"),
+    ]
+
+
+def seed_dependency_classifications(conn):
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO dependency_classifications(marker, dependency_type)
+        VALUES (?, ?)
+        """,
+        get_default_classifications(),
+    )
 
 
 def build_provider_token(provider, token=None):
@@ -212,6 +275,7 @@ def get_default_db_path():
 def initialize_database(conn):
     for statement in SCHEMA_STATEMENTS:
         conn.execute(statement)
+    seed_dependency_classifications(conn)
     conn.commit()
 
 
@@ -297,6 +361,38 @@ def insert_karate_paths(conn, feature_file_id, paths):
     )
 
 
+def insert_repo_datasources(conn, repo_id, datasource_rows):
+    if not datasource_rows:
+        return
+    conn.executemany(
+        "INSERT INTO repo_datasources(repo_id, source_file, url) VALUES (?, ?, ?)",
+        [(repo_id, row["source_file"], row["url"]) for row in datasource_rows],
+    )
+
+
+def insert_controller_service(conn, controller_id, service_name, found):
+    cursor = conn.execute(
+        """
+        INSERT INTO controller_services(controller_id, service_name, found)
+        VALUES (?, ?, ?)
+        """,
+        (controller_id, service_name, found),
+    )
+    return cursor.lastrowid
+
+
+def insert_service_dependency_markers(conn, controller_service_id, markers):
+    if not markers:
+        return
+    conn.executemany(
+        """
+        INSERT INTO service_dependency_markers(controller_service_id, marker)
+        VALUES (?, ?)
+        """,
+        [(controller_service_id, marker) for marker in sorted(markers)],
+    )
+
+
 def find_controller_id_for_feature_file(file_path, controller_id_by_name):
     for segment in Path(file_path).parts:
         controller_id = controller_id_by_name.get(segment)
@@ -329,6 +425,201 @@ def collect_karate_feature_files(directory):
     if not test_root.exists() or not test_root.is_dir():
         return []
     return sorted(test_root.rglob("*.feature"))
+
+
+def collect_application_yml_files(directory):
+    return sorted(Path(directory).rglob("application*.yml"))
+
+
+def strip_yaml_inline_comment(value):
+    quote_char = None
+    for index, char in enumerate(value):
+        if char in {'"', "'"}:
+            if quote_char is None:
+                quote_char = char
+            elif quote_char == char:
+                quote_char = None
+        if char == "#" and quote_char is None:
+            return value[:index].rstrip()
+    return value.rstrip()
+
+
+def normalize_yaml_value(value):
+    value = strip_yaml_inline_comment(value.strip())
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
+
+
+def extract_datasource_urls_from_yaml_content(content):
+    stack = []
+    urls = []
+    flat_urls = []
+
+    for raw_line in content.splitlines():
+        line_without_comment = strip_yaml_inline_comment(raw_line).rstrip()
+        stripped = line_without_comment.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+
+        indent = len(line_without_comment) - len(line_without_comment.lstrip(" "))
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+
+        key, _, raw_value = stripped.partition(":")
+        key = key.strip()
+        value = raw_value.strip()
+
+        if not value:
+            stack.append((indent, key))
+            continue
+
+        full_path = ".".join([item[1] for item in stack] + [key])
+        normalized_value = normalize_yaml_value(value)
+        if full_path in {"spring.datasource.url", "env.spring.datasource.url"} and normalized_value:
+            urls.append(normalized_value)
+
+        inline_match = INLINE_YAML_PATTERN.match(line_without_comment)
+        if inline_match and inline_match.group(1) == "env.spring.datasource.url":
+            inline_value = normalize_yaml_value(inline_match.group(2))
+            if inline_value:
+                flat_urls.append(inline_value)
+
+    merged_urls = []
+    seen = set()
+    for url in [*urls, *flat_urls]:
+        if url in seen:
+            continue
+        seen.add(url)
+        merged_urls.append(url)
+    return merged_urls
+
+
+def collect_repo_datasources(repo_root):
+    datasource_rows = []
+    for file_path in collect_application_yml_files(repo_root):
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        urls = extract_datasource_urls_from_yaml_content(content)
+        relative_name = str(file_path.relative_to(repo_root)).replace("\\", "/")
+        datasource_rows.extend([{"source_file": relative_name, "url": url} for url in urls])
+    return datasource_rows
+
+
+def find_java_file_by_name(repo_root, file_name):
+    matches = list(Path(repo_root).rglob(file_name))
+    if not matches:
+        return None
+    return sorted(matches)[0]
+
+
+def extract_service_names_from_signature(signature):
+    services = set()
+    params = split_top_level_commas(signature.strip())
+    for param in params:
+        parts = [part for part in re.split(r"\s+", param.strip()) if part]
+        if len(parts) < 2:
+            continue
+        java_type = parts[-2]
+        cleaned_type = java_type.replace("...", "")
+        if cleaned_type.endswith("Service"):
+            services.add(cleaned_type)
+    return services
+
+
+def extract_controller_services(content):
+    services = set()
+
+    field_declarations = re.findall(
+        r"\b(?:private|protected|public)\s+([A-Z][A-Za-z0-9_]*Service)\s+\w+\s*(?:;|=)",
+        content,
+    )
+    services.update(field_declarations)
+
+    for signature in re.findall(r"\(([^)]*)\)", content, re.DOTALL):
+        services.update(extract_service_names_from_signature(signature))
+
+    direct_instantiations = re.findall(r"new\s+([A-Z][A-Za-z0-9_]*Service)\s*\(", content)
+    services.update(direct_instantiations)
+
+    return sorted(service for service in services if service.endswith("Service"))
+
+
+def get_dependency_markers(conn):
+    rows = conn.execute("SELECT marker FROM dependency_classifications").fetchall()
+    return [row[0] for row in rows]
+
+
+def find_markers_in_service_content(content, markers):
+    found_markers = set()
+    for marker in markers:
+        if marker in content:
+            found_markers.add(marker)
+    return found_markers
+
+
+def scan_service_dependencies_for_repo(conn, repo_id, repo_root):
+    marker_candidates = get_dependency_markers(conn)
+    counts = defaultdict(int)
+    not_found_services = []
+    controller_rows = conn.execute(
+        "SELECT id, name FROM controllers WHERE repo_id = ?",
+        (repo_id,),
+    ).fetchall()
+
+    for controller_id, controller_name in controller_rows:
+        controller_file = find_java_file_by_name(repo_root, f"{controller_name}.java")
+        if not controller_file:
+            continue
+        try:
+            controller_content = controller_file.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        service_names = extract_controller_services(controller_content)
+        for service_name in service_names:
+            service_file = find_java_file_by_name(repo_root, f"{service_name}.java")
+            if not service_file:
+                insert_controller_service(conn, controller_id, service_name, False)
+                not_found_services.append(service_name)
+                counts["services_scanned"] += 1
+                counts["services_not_found"] += 1
+                continue
+
+            controller_service_id = insert_controller_service(conn, controller_id, service_name, True)
+            counts["services_scanned"] += 1
+            try:
+                service_content = service_file.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+
+            markers = find_markers_in_service_content(service_content, marker_candidates)
+            insert_service_dependency_markers(conn, controller_service_id, markers)
+            counts["dependency_markers"] += len(markers)
+
+    counts["not_found_service_names"] = sorted(set(not_found_services))
+    return counts
+
+
+def print_repo_dependency_summary(repo_name, datasource_rows, dependency_counts):
+    datasource_files = sorted({row["source_file"] for row in datasource_rows})
+    datasource_details = f" ({', '.join(datasource_files)})" if datasource_files else ""
+    missing_details = ""
+    if dependency_counts["not_found_service_names"]:
+        missing_details = f" ({', '.join(dependency_counts['not_found_service_names'])})"
+
+    print(repo_name)
+    print(f"  Datasources found:     {len(datasource_rows)}{datasource_details}")
+    print(f"  Services scanned:      {dependency_counts['services_scanned']}")
+    print(f"  Services not found:    {dependency_counts['services_not_found']}{missing_details}")
+    print(f"  Dependency markers:    {dependency_counts['dependency_markers']}")
+
+
+def print_service_not_found_warnings(repo_name, service_names):
+    for service_name in service_names:
+        print(f"WARNING: {service_name}.java not found in repo {repo_name}")
 
 
 def insert_karate_data_for_repo(conn, repo_id, repo_root):
@@ -412,6 +703,46 @@ def build_summary_for_scan_run(conn, scan_run_id):
         """,
         (scan_run_id,),
     ).fetchone()[0]
+    total_datasources = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM repo_datasources d
+        JOIN repos r ON r.id = d.repo_id
+        WHERE r.scan_run_id = ?
+        """,
+        (scan_run_id,),
+    ).fetchone()[0]
+    total_services_scanned = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM controller_services cs
+        JOIN controllers c ON c.id = cs.controller_id
+        JOIN repos r ON r.id = c.repo_id
+        WHERE r.scan_run_id = ?
+        """,
+        (scan_run_id,),
+    ).fetchone()[0]
+    total_services_not_found = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM controller_services cs
+        JOIN controllers c ON c.id = cs.controller_id
+        JOIN repos r ON r.id = c.repo_id
+        WHERE r.scan_run_id = ? AND cs.found = 0
+        """,
+        (scan_run_id,),
+    ).fetchone()[0]
+    total_dependency_markers = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM service_dependency_markers sdm
+        JOIN controller_services cs ON cs.id = sdm.controller_service_id
+        JOIN controllers c ON c.id = cs.controller_id
+        JOIN repos r ON r.id = c.repo_id
+        WHERE r.scan_run_id = ?
+        """,
+        (scan_run_id,),
+    ).fetchone()[0]
     breakdown_rows = conn.execute(
         """
         SELECT
@@ -438,6 +769,10 @@ def build_summary_for_scan_run(conn, scan_run_id):
         "total_controller_files": total_rest_controllers + total_controllers,
         "total_endpoints": total_endpoints,
         "total_feature_files": total_feature_files,
+        "total_datasources": total_datasources,
+        "total_services_scanned": total_services_scanned,
+        "total_services_not_found": total_services_not_found,
+        "total_dependency_markers": total_dependency_markers,
         "repo_results": [
             {
                 "repo_name": row[0],
@@ -762,8 +1097,15 @@ def process_repositories(
                 if controllers:
                     insert_controllers(conn, repo_id, controllers)
                 delete_repo_karate_data(conn, repo_id)
+                datasource_rows = []
+                dependency_counts = defaultdict(int)
                 if repo_path:
                     insert_karate_data_for_repo(conn, repo_id, repo_path)
+                    datasource_rows = collect_repo_datasources(repo_path)
+                    insert_repo_datasources(conn, repo_id, datasource_rows)
+                    dependency_counts = scan_service_dependencies_for_repo(conn, repo_id, repo_path)
+                    print_service_not_found_warnings(repo_name, dependency_counts["not_found_service_names"])
+                print_repo_dependency_summary(repo_name, datasource_rows, dependency_counts)
 
         return scan_run_id, build_summary_for_scan_run(conn, scan_run_id)
 
@@ -779,6 +1121,10 @@ def format_summary_lines(stats):
         f"Total Controller files: {stats['total_controller_files']}",
         f"Total endpoints: {stats['total_endpoints']}",
         f"Total feature files: {stats['total_feature_files']}",
+        f"Total datasources: {stats['total_datasources']}",
+        f"Total services scanned: {stats['total_services_scanned']}",
+        f"Total services not found: {stats['total_services_not_found']}",
+        f"Total dependency markers: {stats['total_dependency_markers']}",
     ]
 
     if stats["repo_results"]:

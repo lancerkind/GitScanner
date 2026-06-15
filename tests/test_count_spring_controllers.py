@@ -15,6 +15,8 @@ from gitscanner.count_spring_controllers import (
     collect_karate_feature_files,
     count_controllers_in_directory,
     create_scan_run,
+    extract_controller_services,
+    extract_datasource_urls_from_yaml_content,
     extract_karate_paths,
     format_summary_lines,
     insert_karate_data_for_repo,
@@ -310,6 +312,10 @@ def test_format_summary_lines_includes_sorted_breakdown():
         "total_controller_files": 5,
         "total_endpoints": 7,
         "total_feature_files": 4,
+        "total_datasources": 2,
+        "total_services_scanned": 5,
+        "total_services_not_found": 1,
+        "total_dependency_markers": 6,
         "repo_results": [
             {
                 "repo_name": "org/two",
@@ -331,6 +337,8 @@ def test_format_summary_lines_includes_sorted_breakdown():
     lines = format_summary_lines(stats)
     assert any("Repositories with controllers: 2/3" in line for line in lines)
     assert any("Total feature files: 4" in line for line in lines)
+    assert any("Total datasources: 2" in line for line in lines)
+    assert any("Total dependency markers: 6" in line for line in lines)
     joined = "\n".join(lines)
     assert joined.index("org/two") < joined.index("org/one")
     assert "4 controllers   3 feature files" in joined
@@ -355,6 +363,58 @@ def test_initialize_database_creates_schema(tmp_path):
             )
         }
     assert endpoint_tables == {"endpoints", "karate_feature_files", "karate_paths"}
+    with sqlite3.connect(db_path) as conn:
+        dependency_tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('repo_datasources','controller_services','service_dependency_markers','dependency_classifications')"
+            )
+        }
+    assert dependency_tables == {
+        "repo_datasources",
+        "controller_services",
+        "service_dependency_markers",
+        "dependency_classifications",
+    }
+
+
+def test_extract_datasource_urls_supports_all_required_structures():
+    content = """
+spring:
+  datasource:
+    url: jdbc:oracle:thin:@//hostname:1521/mydb
+env:
+  spring:
+    datasource:
+      url: jdbc:postgresql://localhost:5432/db
+env.spring.datasource.url: jdbc:h2:mem:testdb
+"""
+
+    urls = extract_datasource_urls_from_yaml_content(content)
+    assert urls == [
+        "jdbc:oracle:thin:@//hostname:1521/mydb",
+        "jdbc:postgresql://localhost:5432/db",
+        "jdbc:h2:mem:testdb",
+    ]
+
+
+def test_extract_controller_services_supports_all_required_styles():
+    content = """
+@RestController
+class CatController {
+    @Autowired
+    private CatService catService;
+
+    public CatController(DogService dogService) {}
+
+    @Autowired
+    public void setBirdService(BirdService birdService) {}
+
+    private FishService fishService = new FishService();
+}
+"""
+
+    assert extract_controller_services(content) == ["BirdService", "CatService", "DogService", "FishService"]
 
 
 def test_db_insert_scan_repo_controller_and_summary(tmp_path):
@@ -487,6 +547,50 @@ def test_process_repositories_includes_karate_feature_files(tmp_path):
     )
 
     assert stats["total_feature_files"] == 1
+
+
+def test_process_repositories_scans_datasources_and_service_markers(tmp_path):
+    repo_root = tmp_path / "repo"
+    application = repo_root / "application.yml"
+    application.parent.mkdir(parents=True)
+    application.write_text(
+        """
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/cats
+""",
+        encoding="utf-8",
+    )
+    controller = repo_root / "src" / "main" / "java" / "com" / "example" / "CatController.java"
+    controller.parent.mkdir(parents=True)
+    controller.write_text(
+        """
+@RestController
+class CatController {
+    private CatService catService;
+}
+""",
+        encoding="utf-8",
+    )
+    service = repo_root / "src" / "main" / "java" / "com" / "example" / "CatService.java"
+    service.write_text("class CatService { JdbcTemplate jdbcTemplate; KafkaTemplate kafkaTemplate; }", encoding="utf-8")
+
+    def fake_clone_and_count(repo_name, provider="github", token=None):
+        return {
+            "controllers": [{"name": "CatController", "base_path": None, "type": "RestController"}],
+            "repo_path": str(repo_root),
+        }
+
+    _, stats = process_repositories(
+        ["org/repo"],
+        db_path=str(tmp_path / "scan.db"),
+        clone_and_count_func=fake_clone_and_count,
+    )
+
+    assert stats["total_datasources"] == 1
+    assert stats["total_services_scanned"] == 1
+    assert stats["total_services_not_found"] == 0
+    assert stats["total_dependency_markers"] == 2
     assert stats["repo_results"][0]["total_feature_files"] == 1
 
 
