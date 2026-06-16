@@ -7,6 +7,7 @@ Useful for private repos or when code search API is limited.
 import argparse
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -59,6 +60,7 @@ KARATE_PATH_PATTERN = re.compile(r"/\S+")
 JAVA_SERVICE_TYPE_PATTERN = re.compile(r"\b([A-Z][A-Za-z0-9_]*Service)\b")
 INLINE_YAML_PATTERN = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*:\s*(.+?)\s*$")
 
+# language=SQL
 SCHEMA_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS scan_runs (
@@ -520,11 +522,20 @@ def find_java_file_by_name(repo_root, file_name):
     return sorted(matches)[0]
 
 
+JAVA_IDENTIFIER_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
+
 def extract_service_names_from_signature(signature):
     services = set()
     params = split_top_level_commas(signature.strip())
     for param in params:
-        parts = [part for part in re.split(r"\s+", param.strip()) if part]
+        cleaned_param = re.sub(
+            r"@\w+(?:\s*\([^)]*\))?",
+            " ",
+            param,
+            flags=re.DOTALL,
+        )
+        cleaned_param = re.sub(r"\bfinal\b", " ", cleaned_param)
+        parts = [part for part in re.split(r"\s+", cleaned_param.strip()) if part]
         if len(parts) < 2:
             continue
         java_type = parts[-2]
@@ -538,10 +549,33 @@ def extract_controller_services(content):
     services = set()
 
     field_declarations = re.findall(
-        r"\b(?:private|protected|public)\s+([A-Z][A-Za-z0-9_]*Service)\s+\w+\s*(?:;|=)",
+        rf"""
+        (?:@\w+(?:\s*\([^)]*\))?\s*)*
+        (?:
+            public|protected|private|static|final|volatile|transient
+        |\s)+
+        (?P<service>[A-Z][A-Za-z0-9_]*Service)
+        \s+
+        {JAVA_IDENTIFIER_PATTERN}
+        \s*(?:=|;)
+        """,
         content,
+        flags=re.VERBOSE | re.DOTALL,
     )
     services.update(field_declarations)
+
+    package_private_field_declarations = re.findall(
+        rf"""
+        (?:@\w+(?:\s*\([^)]*\))?\s*)+
+        (?P<service>[A-Z][A-Za-z0-9_]*Service)
+        \s+
+        {JAVA_IDENTIFIER_PATTERN}
+        \s*(?:=|;)
+        """,
+        content,
+        flags=re.VERBOSE | re.DOTALL,
+    )
+    services.update(package_private_field_declarations)
 
     for signature in re.findall(r"\(([^)]*)\)", content, re.DOTALL):
         services.update(extract_service_names_from_signature(signature))
@@ -550,7 +584,6 @@ def extract_controller_services(content):
     services.update(direct_instantiations)
 
     return sorted(service for service in services if service.endswith("Service"))
-
 
 def get_dependency_markers(conn):
     rows = conn.execute("SELECT marker FROM dependency_classifications").fetchall()
@@ -577,10 +610,12 @@ def scan_service_dependencies_for_repo(conn, repo_id, repo_root):
     for controller_id, controller_name in controller_rows:
         controller_file = find_java_file_by_name(repo_root, f"{controller_name}.java")
         if not controller_file:
+            print(f"WARNING: {controller_name}.java not found while scanning services")
             continue
         try:
             controller_content = controller_file.read_text(encoding="utf-8", errors="ignore")
         except Exception:
+            print(f"WARNING: Could not read {controller_file} while scanning services")
             continue
 
         service_names = extract_controller_services(controller_content)
@@ -1059,29 +1094,31 @@ def build_clone_url(repo_full_name, api_base_url, provider="github", token=None)
 def clone_and_count(repo_full_name, api_base_url, provider="github", token=None, run=subprocess.run):
     """Clone a repo temporarily and collect controllers and Karate data source path."""
     clone_url = build_clone_url(repo_full_name, api_base_url, provider=provider, token=token)
+    tmpdir = tempfile.mkdtemp(prefix="gitscanner-")
+    try:
+        # Clone with minimal depth
+        result = run(
+            ["git", "clone", "--depth", "1", clone_url, tmpdir],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            # Clone with minimal depth
-            result = run(
-                ["git", "clone", "--depth", "1", clone_url, tmpdir],
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
+        if result.returncode != 0:
+            raise RuntimeError(f"Clone failed: {result.stderr.strip()}")
 
-            if result.returncode != 0:
-                raise RuntimeError(f"Clone failed: {result.stderr.strip()}")
+        return {
+            "controllers": count_controllers_in_directory(tmpdir),
+            "repo_path": tmpdir,
+            "cleanup_path": tmpdir,
+        }
 
-            return {
-                "controllers": count_controllers_in_directory(tmpdir),
-                "repo_path": tmpdir,
-            }
-
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("Clone timeout")
-        except Exception as exc:
-            raise RuntimeError(f"Error: {exc}") from exc
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise RuntimeError("Clone timeout")
+    except Exception as exc:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise RuntimeError(f"Error: {exc}") from exc
 
 
 def process_repositories(
@@ -1099,32 +1136,38 @@ def process_repositories(
         scan_run_id = create_scan_run(conn)
 
         for repo_name in repos:
-            scan_result = clone_and_count_func(repo_name, api_base_url=api_base_url, provider=provider, token=token)
-            if isinstance(scan_result, dict):
-                controllers = scan_result.get("controllers", [])
-                repo_path = scan_result.get("repo_path")
-            else:
-                controllers = scan_result
-                repo_path = None
-            with conn:
-                repo_id = insert_repo(
-                    conn,
-                    scan_run_id,
-                    repo_name,
-                    url=build_clone_url(repo_name, api_base_url, provider, token),
-                )
-                if controllers:
-                    insert_controllers(conn, repo_id, controllers)
-                delete_repo_karate_data(conn, repo_id)
-                datasource_rows = []
-                dependency_counts = defaultdict(int)
-                if repo_path:
-                    insert_karate_data_for_repo(conn, repo_id, repo_path)
-                    datasource_rows = collect_repo_datasources(repo_path)
-                    insert_repo_datasources(conn, repo_id, datasource_rows)
-                    dependency_counts = scan_service_dependencies_for_repo(conn, repo_id, repo_path)
-                    print_service_not_found_warnings(repo_name, dependency_counts["not_found_service_names"])
-                print_repo_dependency_summary(repo_name, datasource_rows, dependency_counts)
+            cleanup_path = None
+            try:
+                scan_result = clone_and_count_func(repo_name, api_base_url=api_base_url, provider=provider, token=token)
+                if isinstance(scan_result, dict):
+                    controllers = scan_result.get("controllers", [])
+                    repo_path = scan_result.get("repo_path")
+                    cleanup_path = scan_result.get("cleanup_path")
+                else:
+                    controllers = scan_result
+                    repo_path = None
+                with conn:
+                    repo_id = insert_repo(
+                        conn,
+                        scan_run_id,
+                        repo_name,
+                        url=build_clone_url(repo_name, api_base_url, provider, token),
+                    )
+                    if controllers:
+                        insert_controllers(conn, repo_id, controllers)
+                    delete_repo_karate_data(conn, repo_id)
+                    datasource_rows = []
+                    dependency_counts = defaultdict(int)
+                    if repo_path:
+                        insert_karate_data_for_repo(conn, repo_id, repo_path)
+                        datasource_rows = collect_repo_datasources(repo_path)
+                        insert_repo_datasources(conn, repo_id, datasource_rows)
+                        dependency_counts = scan_service_dependencies_for_repo(conn, repo_id, repo_path)
+                        print_service_not_found_warnings(repo_name, dependency_counts["not_found_service_names"])
+                    print_repo_dependency_summary(repo_name, datasource_rows, dependency_counts)
+            finally:
+                if cleanup_path:
+                    shutil.rmtree(cleanup_path, ignore_errors=True)
 
         return scan_run_id, build_summary_for_scan_run(conn, scan_run_id)
 

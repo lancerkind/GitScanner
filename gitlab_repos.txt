@@ -1,2 +1,3 @@
 coding_examples/spring-boot-app
 gitlab-ci-examples1/gitlab-runner-spring-boot-demo
+somaxa8/spring-template

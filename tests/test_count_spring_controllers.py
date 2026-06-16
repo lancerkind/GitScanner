@@ -469,19 +469,69 @@ env.spring.datasource.url: jdbc:h2:mem:testdb
     ]
 
 
-def test_extract_controller_services_supports_all_required_styles():
+def test_extract_controller_services_supports_autowired_private_final_field():
     content = """
 @RestController
 class CatController {
     @Autowired
-    private CatService catService;
+    private final CatService catService;
+}
+"""
 
-    public CatController(DogService dogService) {}
+    assert extract_controller_services(content) == ["CatService"]
+
+
+def test_extract_controller_services_supports_autowired_package_private_field():
+    content = """
+@RestController
+class CatController {
+    @Autowired
+    CatService catService;
+}
+"""
+
+    assert extract_controller_services(content) == ["CatService"]
+
+
+def test_extract_controller_services_supports_autowired_with_required_attribute():
+    content = """
+@RestController
+class CatController {
+    @Autowired(required = false)
+    private CatService catService;
+}
+"""
+
+    assert extract_controller_services(content) == ["CatService"]
+
+
+def test_extract_controller_services_supports_private_final_field_without_autowired():
+    content = """
+@RestController
+class CatController {
+    private final CatService catService;
+}
+"""
+
+    assert extract_controller_services(content) == ["CatService"]
+
+
+def test_extract_controller_services_deduplicates_autowired_service_fields():
+    content = """
+@RestController
+class CatController {
+    @Autowired
+    private final CatService catService;
 
     @Autowired
-    public void setBirdService(BirdService birdService) {}
+    CatService anotherCatService;
 
+    @Autowired(required = false)
+    private DogService dogService;
+    
     private FishService fishService = new FishService();
+
+    private final BirdService birdService;
 }
 """
 
