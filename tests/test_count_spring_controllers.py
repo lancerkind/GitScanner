@@ -9,7 +9,6 @@ from gitscanner.count_spring_controllers import (
     build_parser,
     build_clone_url,
     build_gitlab_headers,
-    build_gitlab_token,
     build_github_headers,
     build_summary_for_scan_run,
     collect_karate_feature_files,
@@ -59,8 +58,7 @@ def test_parse_cli_args_no_args_prints_usage_and_exits(capsys):
     captured = capsys.readouterr()
     assert captured.out == build_parser().format_help()
     assert "--provider" in captured.out
-    assert "GITHUB_TOKEN" in captured.out
-    assert "GITLAB_TOKEN" in captured.out
+    assert "GITSCANNER_TOKEN" in captured.out
 
 
 def test_read_repos_from_file_skips_comments_and_empty_lines(tmp_path):
@@ -77,19 +75,36 @@ def test_read_repos_from_file_not_found_raises_runtime_error():
 
 
 def test_build_github_headers_with_and_without_token(monkeypatch):
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITSCANNER_TOKEN", raising=False)
     assert build_github_headers() == {"Accept": "application/vnd.github.v3+json"}
     assert build_github_headers("abc123")["Authorization"] == "token abc123"
 
 
-def test_build_gitlab_token_and_headers(monkeypatch):
-    monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-    assert build_gitlab_token() is None
+def test_build_github_headers_uses_environment_token(monkeypatch):
+    monkeypatch.setenv("GITSCANNER_TOKEN", "env-gh-token")
+    headers = build_github_headers()
+    assert headers == {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": "token env-gh-token",
+    }
+
+
+def test_build_gitlab_headers_with_and_without_token(monkeypatch):
+    monkeypatch.delenv("GITSCANNER_TOKEN", raising=False)
     assert build_gitlab_headers() == {"Accept": "application/json"}
     assert build_gitlab_headers("xyz") == {"Accept": "application/json", "PRIVATE-TOKEN": "xyz"}
 
 
-def test_build_clone_url_for_github_public_and_custom_api_urls():
+def test_build_gitlab_headers_uses_environment_token(monkeypatch):
+    monkeypatch.setenv("GITSCANNER_TOKEN", "env-gl-token")
+    assert build_gitlab_headers() == {
+        "Accept": "application/json",
+        "PRIVATE-TOKEN": "env-gl-token",
+    }
+
+
+def test_build_clone_url_for_github_public_and_custom_api_urls(monkeypatch):
+    monkeypatch.delenv("GITSCANNER_TOKEN", raising=False)
     assert (
         build_clone_url("org/repo", api_base_url="https://api.github.com", token="tkn")
         == "https://tkn@github.com/org/repo.git"
@@ -108,7 +123,8 @@ def test_build_clone_url_for_github_public_and_custom_api_urls():
     )
 
 
-def test_build_clone_url_for_gitlab_public_and_custom_api_urls():
+def test_build_clone_url_for_gitlab_public_and_custom_api_urls(monkeypatch):
+    monkeypatch.delenv("GITSCANNER_TOKEN", raising=False)
     assert (
         build_clone_url(
             "group/sub/repo",
@@ -684,7 +700,7 @@ def test_main_success_prints_summary(monkeypatch, capsys):
         ),
     )
     monkeypatch.setattr(module, "read_repos_from_file", lambda path: ["org/repo"])
-    monkeypatch.setattr(module, "build_gitlab_token", lambda token=None: "abc")
+    monkeypatch.setattr(module, "build_token", lambda token=None: "abc")
     monkeypatch.setattr(
         module,
         "process_repositories",

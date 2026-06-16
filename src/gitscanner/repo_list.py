@@ -153,7 +153,7 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="List repositories for a GitHub organization/user or GitLab namespace.",
         usage="python repo_scanning.py <API_BASE_URL> <ORG> [--filter <substring>]",
-        epilog="Environment variables: GITHUB_TOKEN (github), GITLAB_TOKEN (gitlab).",
+        epilog="Environment variables: GITSCANNER_TOKEN.",
     )
     parser.add_argument(
         "API_BASE_URL",
@@ -185,9 +185,7 @@ def parse_cli_args(argv):
 def build_provider_token(provider, token=None):
     if token is not None:
         return token
-    if provider == "gitlab":
-        return os.environ.get("GITLAB_TOKEN")
-    return os.environ.get("GITHUB_TOKEN")
+    return os.environ.get("GITSCANNER_TOKEN")
 
 
 def build_github_headers(token=None):
@@ -223,10 +221,10 @@ def fetch_github_repos(api_base_url, org, headers=None, get=requests.get):
 
         while True:
             if response.status_code == 401:
-                _raise_auth_required_error("GITHUB_TOKEN")
+                _raise_auth_required_error("GITSCANNER_TOKEN")
 
             if response.status_code == 403:
-                _raise_auth_failed_error("GITHUB_TOKEN")
+                _raise_auth_failed_error("GITSCANNER_TOKEN")
 
             if response.status_code == 404:
                 _raise_namespace_not_found_error(org)
@@ -270,10 +268,10 @@ def _fetch_gitlab_group_projects(base_url, org, headers, get):
 
     while True:
         if response.status_code == 401:
-            _raise_auth_required_error("GITLAB_TOKEN")
+            _raise_auth_required_error("GITSCANNER_TOKEN")
 
         if response.status_code == 403:
-            _raise_auth_failed_error("GITLAB_TOKEN")
+            _raise_auth_failed_error("GITSCANNER_TOKEN")
 
         if response.status_code == 404:
             return None
@@ -307,10 +305,10 @@ def _fetch_gitlab_user_projects(base_url, org, headers, get):
     validated_first_success = False
 
     if users_response.status_code == 401:
-        _raise_auth_required_error("GITLAB_TOKEN")
+        _raise_auth_required_error("GITSCANNER_TOKEN")
 
     if users_response.status_code == 403:
-        _raise_auth_failed_error("GITLAB_TOKEN")
+        _raise_auth_failed_error("GITSCANNER_TOKEN")
 
     if not users_response.ok:
         _raise_unexpected_response_error("GitLab", users_response.status_code, org)
@@ -328,10 +326,10 @@ def _fetch_gitlab_user_projects(base_url, org, headers, get):
         response = get(url, headers=headers, params=params)
         while True:
             if response.status_code == 401:
-                _raise_auth_required_error("GITLAB_TOKEN")
+                _raise_auth_required_error("GITSCANNER_TOKEN")
 
             if response.status_code == 403:
-                _raise_auth_failed_error("GITLAB_TOKEN")
+                _raise_auth_failed_error("GITSCANNER_TOKEN")
 
             if not response.ok:
                 _raise_unexpected_response_error("GitLab", response.status_code, org)
@@ -359,10 +357,10 @@ def _fetch_gitlab_user_projects(base_url, org, headers, get):
     response = get(fallback_url, headers=headers, params=params)
     while True:
         if response.status_code == 401:
-            _raise_auth_required_error("GITLAB_TOKEN")
+            _raise_auth_required_error("GITSCANNER_TOKEN")
 
         if response.status_code == 403:
-            _raise_auth_failed_error("GITLAB_TOKEN")
+            _raise_auth_failed_error("GITSCANNER_TOKEN")
 
         if response.status_code == 404:
             _raise_namespace_not_found_error(org)

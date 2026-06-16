@@ -56,8 +56,7 @@ def test_parse_cli_args_no_args_prints_usage_and_exits(capsys):
     captured = capsys.readouterr()
     assert captured.out == build_parser().format_help()
     assert "--provider" in captured.out
-    assert "GITHUB_TOKEN" in captured.out
-    assert "GITLAB_TOKEN" in captured.out
+    assert "GITSCANNER_TOKEN" in captured.out
 
 
 def test_build_github_headers_uses_explicit_token():
@@ -66,15 +65,26 @@ def test_build_github_headers_uses_explicit_token():
 
 
 def test_build_github_headers_empty_without_token(monkeypatch):
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITSCANNER_TOKEN", raising=False)
     headers = build_github_headers()
     assert headers == {}
 
 
+def test_build_github_headers_uses_environment_token(monkeypatch):
+    monkeypatch.setenv("GITSCANNER_TOKEN", "env-gh-token")
+    headers = build_github_headers()
+    assert headers == {"Authorization": "token env-gh-token"}
+
+
 def test_build_gitlab_headers_with_and_without_token(monkeypatch):
-    monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+    monkeypatch.delenv("GITSCANNER_TOKEN", raising=False)
     assert build_gitlab_headers() == {}
     assert build_gitlab_headers("gl-token") == {"PRIVATE-TOKEN": "gl-token"}
+
+
+def test_build_gitlab_headers_uses_environment_token(monkeypatch):
+    monkeypatch.setenv("GITSCANNER_TOKEN", "env-gl-token")
+    assert build_gitlab_headers() == {"PRIVATE-TOKEN": "env-gl-token"}
 
 
 def test_fetch_github_repos_falls_back_to_users_endpoint_and_paginates():

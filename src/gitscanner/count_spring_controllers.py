@@ -184,15 +184,13 @@ def seed_dependency_classifications(conn):
 def build_provider_token(provider, token=None):
     if token is not None:
         return token
-    if provider == "gitlab":
-        return os.environ.get("GITLAB_TOKEN")
-    return os.environ.get("GITHUB_TOKEN")
+    return os.environ.get("GITSCANNER_TOKEN")
 
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Count Spring controller files by cloning repositories from a list.",
         usage="python count_spring_controllers.py <API_BASE_URL> <repos_file>",
-        epilog="Environment variables: GITHUB_TOKEN (github), GITLAB_TOKEN (gitlab).",
+        epilog="Environment variables: GITSCANNER_TOKEN.",
     )
     parser.add_argument(
         "API_BASE_URL",
@@ -219,16 +217,12 @@ def parse_cli_args(argv):
     return parser.parse_args(argv)
 
 
-def build_github_token(token=None):
-    return build_provider_token("github", token=token)
-
-
-def build_gitlab_token(token=None):
-    return build_provider_token("gitlab", token=token)
+def build_token(token=None):
+    return build_provider_token(None, token=token)
 
 
 def build_github_headers(token=None):
-    token = build_github_token(token)
+    token = build_token(token)
     headers = {"Accept": "application/vnd.github.v3+json"}
     if token:
         headers["Authorization"] = f"token {token}"
@@ -236,7 +230,7 @@ def build_github_headers(token=None):
 
 
 def build_gitlab_headers(token=None):
-    token = build_gitlab_token(token)
+    token = build_token(token)
     headers = {"Accept": "application/json"}
     if token:
         headers["PRIVATE-TOKEN"] = token
@@ -1045,13 +1039,12 @@ def derive_clone_host(api_base_url, provider="github"):
 
 def build_clone_url(repo_full_name, api_base_url, provider="github", token=None):
     host = derive_clone_host(api_base_url, provider=provider)
+    token = build_token(token)
     if provider == "gitlab":
-        token = build_gitlab_token(token)
         if token:
             return f"https://oauth2:{token}@{host}/{repo_full_name}.git"
         return f"https://{host}/{repo_full_name}.git"
 
-    token = build_github_token(token)
     if token:
         return f"https://{token}@{host}/{repo_full_name}.git"
     return f"https://{host}/{repo_full_name}.git"
@@ -1173,10 +1166,7 @@ def main():
         print(f"Loaded {len(repos)} repositories from {args.repos_file}")
         print(f"\nCloning and searching {len(repos)} repositories...\n")
 
-        if args.provider == "gitlab":
-            token = build_gitlab_token()
-        else:
-            token = build_github_token()
+        token = build_token()
 
         _, stats = process_repositories(
             repos,
