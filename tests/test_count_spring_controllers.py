@@ -621,13 +621,22 @@ def test_process_repositories_includes_karate_feature_files(tmp_path):
 
 def test_process_repositories_scans_datasources_and_service_markers(tmp_path):
     repo_root = tmp_path / "repo"
-    application = repo_root / "application.yml"
+    application = repo_root / "src" / "main" / "resources" / "application.yml"
     application.parent.mkdir(parents=True)
     application.write_text(
         """
 spring:
   datasource:
     url: jdbc:mysql://localhost:3306/cats
+""",
+        encoding="utf-8",
+    )
+    ignored_application = repo_root / "application-local.yml"
+    ignored_application.write_text(
+        """
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/ignored
 """,
         encoding="utf-8",
     )

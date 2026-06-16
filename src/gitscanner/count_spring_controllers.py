@@ -427,7 +427,10 @@ def collect_karate_feature_files(directory):
 
 
 def collect_application_yml_files(directory):
-    return sorted(Path(directory).rglob("application*.yml"))
+    resources_root = Path(directory) / "src" / "main" / "resources"
+    if not resources_root.exists() or not resources_root.is_dir():
+        return []
+    return sorted(resources_root.rglob("application*.yml"))
 
 
 def strip_yaml_inline_comment(value):
