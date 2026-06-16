@@ -190,7 +190,8 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="Count Spring controller files by cloning repositories from a list.",
         usage="python count_spring_controllers.py <API_BASE_URL> <repos_file>",
-        epilog="Environment variables: GITSCANNER_TOKEN.",
+        epilog="Environment variables: GITSCANNER_TOKEN. Scanning results are stored in a sqlite database in the pwd called '{DB_FILE_NAME}'.",
+
     )
     parser.add_argument(
         "API_BASE_URL",
