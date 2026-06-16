@@ -51,13 +51,19 @@ uv run count_spring_controllers
 ### GitHub examples
 
 ```bash
-uv run count_spring_controllers github_repos.txt
+uv run count_spring_controllers https://api.github.com github_repos.txt
+
+# GitHub Enterprise-style API URL
+uv run count_spring_controllers https://git.company.com/api/v3 github_repos.txt
 ```
 
 ### GitLab examples
 
 ```bash
-uv run count_spring_controllers gitlab_repos.txt --provider gitlab
+uv run count_spring_controllers https://gitlab.com/api/v4 gitlab_repos.txt --provider gitlab
+
+# Self-hosted GitLab API URL
+uv run count_spring_controllers https://gitlab.company.com/api/v4 enterprise_repos.txt --provider gitlab
 ```
 
 ## Authentication

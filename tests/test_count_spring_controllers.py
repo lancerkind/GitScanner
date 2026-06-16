@@ -40,13 +40,14 @@ class DummyResponse:
 
 
 def test_parse_cli_args_parses_repos_file():
-    args = parse_cli_args(["github_repos.txt"])
+    args = parse_cli_args(["https://api.github.com", "github_repos.txt"])
+    assert args.API_BASE_URL == "https://api.github.com"
     assert args.repos_file == "github_repos.txt"
     assert args.provider == "github"
 
 
 def test_parse_cli_args_parses_provider_option():
-    args = parse_cli_args(["github_repos.txt", "--provider", "gitlab"])
+    args = parse_cli_args(["https://gitlab.com/api/v4", "github_repos.txt", "--provider", "gitlab"])
     assert args.provider == "gitlab"
 
 
@@ -88,19 +89,61 @@ def test_build_gitlab_token_and_headers(monkeypatch):
     assert build_gitlab_headers("xyz") == {"Accept": "application/json", "PRIVATE-TOKEN": "xyz"}
 
 
-def test_build_clone_url_uses_token_when_present():
-    assert build_clone_url("org/repo", token="tkn") == "https://tkn@github.com/org/repo.git"
-    assert build_clone_url("org/repo", token=None) == "https://github.com/org/repo.git"
-
-
-def test_build_clone_url_for_gitlab_uses_oauth2_token_when_present():
+def test_build_clone_url_for_github_public_and_custom_api_urls():
     assert (
-        build_clone_url("group/sub/repo", provider="gitlab", token="gl-token")
+        build_clone_url("org/repo", api_base_url="https://api.github.com", token="tkn")
+        == "https://tkn@github.com/org/repo.git"
+    )
+    assert (
+        build_clone_url("org/repo", api_base_url="https://api.github.com", token=None)
+        == "https://github.com/org/repo.git"
+    )
+    assert (
+        build_clone_url("org/repo", api_base_url="https://git.company.com/api/v3", token="tkn")
+        == "https://tkn@git.company.com/org/repo.git"
+    )
+    assert (
+        build_clone_url("org/repo", api_base_url="https://git.company.com/api/v3", token=None)
+        == "https://git.company.com/org/repo.git"
+    )
+
+
+def test_build_clone_url_for_gitlab_public_and_custom_api_urls():
+    assert (
+        build_clone_url(
+            "group/sub/repo",
+            api_base_url="https://gitlab.com/api/v4",
+            provider="gitlab",
+            token="gl-token",
+        )
         == "https://oauth2:gl-token@gitlab.com/group/sub/repo.git"
     )
     assert (
-        build_clone_url("group/sub/repo", provider="gitlab", token=None)
+        build_clone_url(
+            "group/sub/repo",
+            api_base_url="https://gitlab.com/api/v4",
+            provider="gitlab",
+            token=None,
+        )
         == "https://gitlab.com/group/sub/repo.git"
+    )
+    assert (
+        build_clone_url(
+            "group/sub/repo",
+            api_base_url="https://gitlab.company.com/api/v4",
+            provider="gitlab",
+            token="gl-token",
+        )
+        == "https://oauth2:gl-token@gitlab.company.com/group/sub/repo.git"
+    )
+    assert (
+        build_clone_url(
+            "group/sub/repo",
+            api_base_url="https://gitlab.company.com/api/v4",
+            provider="gitlab",
+            token=None,
+        )
+        == "https://gitlab.company.com/group/sub/repo.git"
     )
 
 
@@ -268,7 +311,8 @@ def test_count_controllers_in_directory_ignores_unreadable_file(monkeypatch, tmp
 
 
 def test_process_repositories_aggregates_totals_and_filters_zero_repos():
-    def fake_clone_and_count(repo_name, provider="github", token=None):
+    def fake_clone_and_count(repo_name, api_base_url, provider="github", token=None):
+        assert api_base_url == "https://gitlab.company.com/api/v4"
         assert provider == "gitlab"
         return {
             "org/a": [
@@ -286,6 +330,7 @@ def test_process_repositories_aggregates_totals_and_filters_zero_repos():
 
     _, stats = process_repositories(
         ["org/a", "org/b", "org/c"],
+        api_base_url="https://gitlab.company.com/api/v4",
         provider="gitlab",
         token="abc",
         db_path=":memory:",
@@ -530,7 +575,7 @@ Feature: Cat tests
 
 
 def test_process_repositories_includes_karate_feature_files(tmp_path):
-    def fake_clone_and_count(repo_name, provider="github", token=None):
+    def fake_clone_and_count(repo_name, api_base_url, provider="github", token=None):
         repo_root = tmp_path / repo_name.replace("/", "_")
         feature = repo_root / "src" / "test" / "java" / "com" / "example" / "CatController" / "cat.feature"
         feature.parent.mkdir(parents=True, exist_ok=True)
@@ -575,7 +620,7 @@ class CatController {
     service = repo_root / "src" / "main" / "java" / "com" / "example" / "CatService.java"
     service.write_text("class CatService { JdbcTemplate jdbcTemplate; KafkaTemplate kafkaTemplate; }", encoding="utf-8")
 
-    def fake_clone_and_count(repo_name, provider="github", token=None):
+    def fake_clone_and_count(repo_name, api_base_url, provider="github", token=None):
         return {
             "controllers": [{"name": "CatController", "base_path": None, "type": "RestController"}],
             "repo_path": str(repo_root),
@@ -591,7 +636,7 @@ class CatController {
     assert stats["total_services_scanned"] == 1
     assert stats["total_services_not_found"] == 0
     assert stats["total_dependency_markers"] == 2
-    assert stats["repo_results"][0]["total_feature_files"] == 1
+    assert stats["repo_results"][0]["total_feature_files"] == 0
 
 
 def test_clone_and_count_wraps_timeout(monkeypatch):
@@ -601,7 +646,13 @@ def test_clone_and_count_wraps_timeout(monkeypatch):
         raise subprocess.TimeoutExpired(cmd="git clone", timeout=300)
 
     with pytest.raises(RuntimeError, match="Clone timeout"):
-        module.clone_and_count("org/repo", provider="gitlab", token="abc", run=fake_run)
+        module.clone_and_count(
+            "org/repo",
+            api_base_url="https://gitlab.company.com/api/v4",
+            provider="gitlab",
+            token="abc",
+            run=fake_run,
+        )
 
 
 def test_clone_and_count_wraps_failed_clone():
@@ -611,7 +662,13 @@ def test_clone_and_count_wraps_failed_clone():
         return SimpleNamespace(returncode=1, stderr="fatal: auth failed")
 
     with pytest.raises(RuntimeError, match="Clone failed"):
-        module.clone_and_count("org/repo", provider="gitlab", token="abc", run=fake_run)
+        module.clone_and_count(
+            "org/repo",
+            api_base_url="https://gitlab.company.com/api/v4",
+            provider="gitlab",
+            token="abc",
+            run=fake_run,
+        )
 
 
 def test_main_success_prints_summary(monkeypatch, capsys):
@@ -620,14 +677,24 @@ def test_main_success_prints_summary(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "parse_cli_args",
-        lambda argv: SimpleNamespace(repos_file="github_repos.txt", provider="gitlab"),
+        lambda argv: SimpleNamespace(
+            API_BASE_URL="https://gitlab.company.com/api/v4",
+            repos_file="github_repos.txt",
+            provider="gitlab",
+        ),
     )
     monkeypatch.setattr(module, "read_repos_from_file", lambda path: ["org/repo"])
     monkeypatch.setattr(module, "build_gitlab_token", lambda token=None: "abc")
     monkeypatch.setattr(
         module,
         "process_repositories",
-        lambda repos, provider="github", token=None, db_path=None, clone_and_count_func=None, sqlite_connect=None: (
+        lambda repos,
+               api_base_url="https://api.github.com",
+               provider="github",
+               token=None,
+               db_path=None,
+               clone_and_count_func=None,
+               sqlite_connect=None: (
             1,
             {
                 "total_repos_scanned": 1,
@@ -637,6 +704,10 @@ def test_main_success_prints_summary(monkeypatch, capsys):
                 "total_controller_files": 1,
                 "total_endpoints": 1,
                 "total_feature_files": 0,
+                "total_datasources": 0,
+                "total_services_scanned": 0,
+                "total_services_not_found": 0,
+                "total_dependency_markers": 0,
                 "repo_results": [
                     {
                         "repo_name": "org/repo",

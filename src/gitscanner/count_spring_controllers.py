@@ -17,6 +17,7 @@ from collections import defaultdict
 # suppress OpenSSL warnings
 import warnings
 from urllib.parse import quote
+from urllib.parse import urlsplit
 warnings.filterwarnings(
     "ignore",
     message="urllib3 v2 only supports OpenSSL 1.1.1+.*",
@@ -190,8 +191,12 @@ def build_provider_token(provider, token=None):
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Count Spring controller files by cloning repositories from a list.",
-        usage="python count_spring_controllers.py <repos_file>",
+        usage="python count_spring_controllers.py <API_BASE_URL> <repos_file>",
         epilog="Environment variables: GITHUB_TOKEN (github), GITLAB_TOKEN (gitlab).",
+    )
+    parser.add_argument(
+        "API_BASE_URL",
+        help="Base REST API URL (e.g., https://api.github.com or https://gitlab.com/api/v4)",
     )
     parser.add_argument(
         "repos_file",
@@ -1030,22 +1035,31 @@ def extract_endpoint_parameters(content, mapping_end_index):
     return parameters
 
 
-def build_clone_url(repo_full_name, provider="github", token=None):
+def derive_clone_host(api_base_url, provider="github"):
+    parsed = urlsplit(api_base_url)
+    host = parsed.netloc
+    if provider == "github" and host.startswith("api."):
+        return host[4:]
+    return host
+
+
+def build_clone_url(repo_full_name, api_base_url, provider="github", token=None):
+    host = derive_clone_host(api_base_url, provider=provider)
     if provider == "gitlab":
         token = build_gitlab_token(token)
         if token:
-            return f"https://oauth2:{token}@gitlab.com/{repo_full_name}.git"
-        return f"https://gitlab.com/{repo_full_name}.git"
+            return f"https://oauth2:{token}@{host}/{repo_full_name}.git"
+        return f"https://{host}/{repo_full_name}.git"
 
     token = build_github_token(token)
     if token:
-        return f"https://{token}@github.com/{repo_full_name}.git"
-    return f"https://github.com/{repo_full_name}.git"
+        return f"https://{token}@{host}/{repo_full_name}.git"
+    return f"https://{host}/{repo_full_name}.git"
 
 
-def clone_and_count(repo_full_name, provider="github", token=None, run=subprocess.run):
+def clone_and_count(repo_full_name, api_base_url, provider="github", token=None, run=subprocess.run):
     """Clone a repo temporarily and collect controllers and Karate data source path."""
-    clone_url = build_clone_url(repo_full_name, provider=provider, token=token)
+    clone_url = build_clone_url(repo_full_name, api_base_url, provider=provider, token=token)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
@@ -1073,6 +1087,7 @@ def clone_and_count(repo_full_name, provider="github", token=None, run=subproces
 
 def process_repositories(
     repos,
+    api_base_url="https://api.github.com",
     provider="github",
     token=None,
     db_path=None,
@@ -1085,7 +1100,7 @@ def process_repositories(
         scan_run_id = create_scan_run(conn)
 
         for repo_name in repos:
-            scan_result = clone_and_count_func(repo_name, provider=provider, token=token)
+            scan_result = clone_and_count_func(repo_name, api_base_url=api_base_url, provider=provider, token=token)
             if isinstance(scan_result, dict):
                 controllers = scan_result.get("controllers", [])
                 repo_path = scan_result.get("repo_path")
@@ -1093,7 +1108,12 @@ def process_repositories(
                 controllers = scan_result
                 repo_path = None
             with conn:
-                repo_id = insert_repo(conn, scan_run_id, repo_name, url=build_clone_url(repo_name, provider, token))
+                repo_id = insert_repo(
+                    conn,
+                    scan_run_id,
+                    repo_name,
+                    url=build_clone_url(repo_name, api_base_url, provider, token),
+                )
                 if controllers:
                     insert_controllers(conn, repo_id, controllers)
                 delete_repo_karate_data(conn, repo_id)
@@ -1158,7 +1178,12 @@ def main():
         else:
             token = build_github_token()
 
-        _, stats = process_repositories(repos, provider=args.provider, token=token)
+        _, stats = process_repositories(
+            repos,
+            api_base_url=args.API_BASE_URL,
+            provider=args.provider,
+            token=token,
+        )
         for line in format_summary_lines(stats):
             print(line)
     except RuntimeError as exc:
