@@ -12,6 +12,7 @@ from gitscanner.count_spring_controllers import (
     build_github_headers,
     build_summary_for_scan_run,
     collect_karate_feature_files,
+    collect_repo_datasources,
     count_controllers_in_directory,
     create_scan_run,
     extract_controller_services,
@@ -598,7 +599,47 @@ Feature: Cat tests
         ("orphan.feature", None, None),
     ]
 
+def test_collect_repo_datasources_finds_flat_env_datasource_url_in_application_profile_yml(tmp_path):
+    repo_root = tmp_path / "repo"
+    resources_dir = repo_root / "src" / "main" / "resources"
+    resources_dir.mkdir(parents=True)
 
+    application_profile = resources_dir / "application-xyz.yml"
+    application_profile.write_text(
+        "env.spring.datasource.url: jdbc:oracle:thin:@localhost:1533/oueaa\n",
+        encoding="utf-8",
+    )
+
+    datasource_rows = collect_repo_datasources(repo_root)
+
+    assert datasource_rows == [
+        {
+            "source_file": "src/main/resources/application-xyz.yml",
+            "url": "jdbc:oracle:thin:@localhost:1533/oueaa",
+        }
+    ]
+
+def test_collect_repo_datasources_finds_flat_env_datasource_url_in_application_profile_yaml(tmp_path):
+    repo_root = tmp_path / "repo"
+    resources_dir = repo_root / "src" / "main" / "resources"
+    resources_dir.mkdir(parents=True)
+
+    application_profile = resources_dir / "application-xyz.yaml"
+    application_profile.write_text(
+        "env.spring.datasource.url: jdbc:oracle:thin:@localhost:1533/oueaa\n",
+        encoding="utf-8",
+    )
+
+    datasource_rows = collect_repo_datasources(repo_root)
+
+    assert datasource_rows == [
+        {
+            "source_file": "src/main/resources/application-xyz.yaml",
+            "url": "jdbc:oracle:thin:@localhost:1533/oueaa",
+        }
+    ]
+
+    
 def test_process_repositories_includes_karate_feature_files(tmp_path):
     def fake_clone_and_count(repo_name, api_base_url, provider="github", token=None):
         repo_root = tmp_path / repo_name.replace("/", "_")

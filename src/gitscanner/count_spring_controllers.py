@@ -430,7 +430,10 @@ def collect_application_yml_files(directory):
     resources_root = Path(directory) / "src" / "main" / "resources"
     if not resources_root.exists() or not resources_root.is_dir():
         return []
-    return sorted(resources_root.rglob("application*.yml"))
+    return sorted([
+        *resources_root.rglob("application*.yml"),
+        *resources_root.rglob("application*.yaml"),
+    ])
 
 
 def strip_yaml_inline_comment(value):
