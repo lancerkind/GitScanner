@@ -152,8 +152,13 @@ def _validate_first_success_response(response, provider_name, api_base_url):
 def build_parser():
     parser = argparse.ArgumentParser(
         description="List repositories for a GitHub organization/user or GitLab namespace.",
-        usage="python repo_scanning.py <API_BASE_URL> <ORG> [--filter <substring>]",
+        usage="list_repos <provider> <API_BASE_URL> <ORG> [--filter <substring>]",
         epilog="Environment variables: GITSCANNER_TOKEN.",
+    )
+    parser.add_argument(
+        "provider",
+        choices=("github", "gitlab"),
+        help="Repository provider to query (choices: github, gitlab)",
     )
     parser.add_argument(
         "API_BASE_URL",
@@ -164,12 +169,6 @@ def build_parser():
         "--filter",
         dest="filter_substring",
         help="Only include repos whose name contains this substring (case-insensitive)",
-    )
-    parser.add_argument(
-        "--provider",
-        choices=("github", "gitlab"),
-        default="github",
-        help="Repository provider to query (default: github)",
     )
     return parser
 

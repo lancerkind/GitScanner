@@ -189,9 +189,14 @@ def build_provider_token(provider, token=None):
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Count Spring controller files by cloning repositories from a list.",
-        usage="python count_spring_controllers.py <API_BASE_URL> <repos_file>",
+        usage="count_spring_controllers <provider> <API_BASE_URL> <repos_file>",
         epilog="Environment variables: GITSCANNER_TOKEN. Scanning results are stored in a sqlite database in the pwd called '{DB_FILE_NAME}'.",
 
+    )
+    parser.add_argument(
+        "provider",
+        choices=("github", "gitlab"),
+        help="Repository provider for clone/auth behavior (choices: github, gitlab)",
     )
     parser.add_argument(
         "API_BASE_URL",
@@ -200,12 +205,6 @@ def build_parser():
     parser.add_argument(
         "repos_file",
         help="Text file containing one repository per line in owner/repo format",
-    )
-    parser.add_argument(
-        "--provider",
-        choices=("github", "gitlab"),
-        default="github",
-        help="Repository provider for clone/auth behavior (default: github)",
     )
     return parser
 

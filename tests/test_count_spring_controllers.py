@@ -39,14 +39,14 @@ class DummyResponse:
 
 
 def test_parse_cli_args_parses_repos_file():
-    args = parse_cli_args(["https://api.github.com", "github_repos.txt"])
+    args = parse_cli_args(["github", "https://api.github.com", "github_repos.txt"])
     assert args.API_BASE_URL == "https://api.github.com"
     assert args.repos_file == "github_repos.txt"
     assert args.provider == "github"
 
 
 def test_parse_cli_args_parses_provider_option():
-    args = parse_cli_args(["https://gitlab.com/api/v4", "github_repos.txt", "--provider", "gitlab"])
+    args = parse_cli_args(["gitlab", "https://gitlab.com/api/v4", "github_repos.txt"])
     assert args.provider == "gitlab"
 
 
@@ -57,8 +57,17 @@ def test_parse_cli_args_no_args_prints_usage_and_exits(capsys):
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == build_parser().format_help()
-    assert "--provider" in captured.out
+    assert "{github,gitlab}" in captured.out
     assert "GITSCANNER_TOKEN" in captured.out
+
+
+def test_parse_cli_args_requires_provider(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        parse_cli_args(["https://api.github.com", "github_repos.txt"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "invalid choice" in captured.err
 
 
 def test_read_repos_from_file_skips_comments_and_empty_lines(tmp_path):
