@@ -11,7 +11,7 @@ warnings.filterwarnings(
 import requests
 from types import SimpleNamespace
 
-from gitscanner.repo_list import (
+from gitscanner.list_repos import (
     build_parser,
     build_gitlab_headers,
     build_github_headers,
@@ -359,11 +359,11 @@ def test_fetch_repos_routes_by_provider(monkeypatch):
     calls = []
 
     monkeypatch.setattr(
-        "gitscanner.repo_list.fetch_github_repos",
+        "gitscanner.list_repos.fetch_github_repos",
         lambda api_base_url, org, headers=None, get=None: calls.append(("github", headers)) or [],
     )
     monkeypatch.setattr(
-        "gitscanner.repo_list.fetch_gitlab_repos",
+        "gitscanner.list_repos.fetch_gitlab_repos",
         lambda api_base_url, org, headers=None, get=None: calls.append(("gitlab", headers)) or [],
     )
 
@@ -375,7 +375,7 @@ def test_fetch_repos_routes_by_provider(monkeypatch):
 
 
 def test_main_success_prints_formatted_lines(monkeypatch, capsys):
-    from gitscanner import repo_list as module
+    from gitscanner import list_repos as module
 
     monkeypatch.setattr(
         module,
@@ -402,7 +402,7 @@ def test_main_success_prints_formatted_lines(monkeypatch, capsys):
 
 
 def test_main_runtime_error_prints_to_stderr_and_exits(monkeypatch, capsys):
-    from gitscanner import repo_list as module
+    from gitscanner import list_repos as module
 
     monkeypatch.setattr(module, "parse_cli_args", lambda argv: (_ for _ in ()).throw(RuntimeError("boom")))
 
