@@ -206,6 +206,24 @@ def test_count_controllers_in_directory_prefers_rest_controller_if_both_annotati
     controllers = count_controllers_in_directory(tmp_path)
     assert controllers == [{"name": "Both", "base_path": None, "type": "RestController", "endpoints": []}]
 
+def test_count_controllers_in_directory_handles_multiple_request_mappings(tmp_path):
+    (tmp_path / "C.java").write_text(
+        """
+        @RestController
+        @RequestMapping({"/api/v1", "/api/v2"})
+        class AController {
+            @GetMapping("/{id}")
+            Cat getById()
+        }
+        """, encoding="utf-8")
+
+    controllers = count_controllers_in_directory(tmp_path)
+    assert len(controllers) == 1
+    assert len(controllers[0]["base_path"]) == 2
+    assert controllers[0]["endpoints"] == [
+        {"http_method": "GET", "path": "/{id}", "parameters": []}
+    ]
+
 
 def test_count_controllers_in_directory_extracts_base_path_and_endpoints(tmp_path):
     (tmp_path / "CatController.java").write_text(
@@ -257,6 +275,277 @@ def test_count_controllers_in_directory_extracts_base_path_and_endpoints(tmp_pat
         {"http_method": "ANY", "path": "/any", "parameters": []},
     ]
 
+def test_count_controllers_in_directory_extracts_various_endpoints(tmp_path):
+    (tmp_path / "LargeCatController.java").write_text(
+        """
+            @RestController
+            @RequestMapping(path = "/api/cats")
+            class LargeCatController {
+             @GetMapping
+                public List<Condition> getAllCond() {            }
+    
+                @GetMapping(value = "/{uuid}")
+                public Conditions getCondById(@PathVariable UUID uuid) {            }
+    
+                @PostMapping
+                public ResponseEntity<Cond> saveCon(@RequestBody Con condition) {
+                }
+    
+                @PutMapping(value = "/{conId}")
+                public Cond updateCon(@PathVariable UUID conId, @RequestBody ConOv condition) {
+                }
+    
+                @DeleteMapping(value = "/{conId}")
+                public void deleteConById(@PathVariable UUID conId) {
+                }
+                
+                @PatchMapping(value = "/{conId}")
+                public void patchById(@PathVariable Long id, @RequestBody PatchRequest body) {}
+            }                
+            """,
+        encoding="utf-8",
+    )
+    controllers = count_controllers_in_directory(tmp_path)
+    assert len(controllers) == 1
+    controller = controllers[0]
+    # print(controller["endpoints"])
+    #    [{'http_method': 'GET', 'path': '/{uuid}',
+    #       'parameters': [{'name': 'uuid', 'java_type': 'UUID', 'source': 'PATH', 'required': True}]},
+    #      {'http_method': 'PUT', 'path': '/{conditionId}',
+    #       'parameters': [{'name': 'conId', 'java_type': 'UUID', 'source': 'PATH', 'required': True},
+    #                      {'name': 'condition', 'java_type': 'ConOv', 'source': 'BODY', 'required': True}]},
+    #      {'http_method': 'DELETE', 'path': '/{conditionId}',
+    #       'parameters': [{'name': 'conId', 'java_type': 'UUID', 'source': 'PATH', 'required': True}]}]
+    assert controller["endpoints"] == [
+        {
+            "http_method": "GET",
+            "path": "/{uuid}",
+            "parameters": [
+                {"name": "uuid", "java_type": "UUID", "source": "PATH", "required": True}
+            ],
+        },
+        {
+            "http_method": "POST",
+            "path": None,
+            "parameters": [
+                {"name": "condition", "java_type": "Con", "source": "BODY", "required": True}
+            ],
+        },
+        {
+            "http_method": "PUT",
+            "path": "/{conId}",
+            "parameters": [
+                {"name": "conId", "java_type": "UUID", "source": "PATH", "required": True},
+                {"name": "condition", "java_type": "ConOv", "source": "BODY", "required": True},
+            ],
+        },
+        {
+            "http_method": "DELETE",
+            "path": "/{conId}",
+            "parameters": [
+                {"name": "conId", "java_type": "UUID", "source": "PATH", "required": True}
+            ],
+        },
+        {
+            "http_method": "PATCH",
+            "path": "/{conId}",
+            "parameters": [
+                {"name": "id", "java_type": "Long", "source": "PATH", "required": True},
+                {"name": "body", "java_type": "PatchRequest", "source": "BODY", "required": True},
+            ],
+        }
+    ]
+
+
+def test_count_controllers_in_directory_extracts_annotations_without_arguments(tmp_path):
+    (tmp_path / "AnnotatedLargeCatController.java").write_text(
+        """
+            @RestController
+            @RequestMapping(path = "/api/cats")
+            class LargeCatController {
+                @GetMapping
+                public List<Condition> getAllCond() {            }
+
+                @PostMapping
+                public ResponseEntity<Cond> saveCon() {
+                }
+
+                @PutMapping
+                public Cond updateCon() {
+                }
+
+                @DeleteMapping
+                public void deleteConById() {
+                }
+
+                @PatchMapping
+                public void patchById() {}
+                }                
+
+            }
+            """,
+        encoding="utf-8",
+    )
+
+    controllers = count_controllers_in_directory(tmp_path)
+    assert len(controllers) == 1
+    controller = controllers[0]
+    assert controller["endpoints"] == [
+        {"http_method": "GET", "path": None, "parameters": []},
+        {"http_method": "POST", "path": None, "parameters": []},
+        {"http_method": "PUT", "path": None, "parameters": []},
+        {"http_method": "DELETE", "path": None, "parameters": []},
+        {"http_method": "PATCH", "path": None, "parameters": []},
+    ]
+
+def test_count_controllers_in_directory_supports_path_parameter(tmp_path):
+    (tmp_path / "MultiController.java").write_text(
+        """
+            @RestController
+            @RequestMapping(path = "/api/cats")
+            class LargeCatController {
+                @GetMapping(path = "/a")
+                public List<Condition> getAllCond() {            }
+
+                @PostMapping(path = "/b")
+                public ResponseEntity<Cond> saveCon() {
+                }
+
+                @PutMapping(path = "/c")
+                public Cond updateCon() {
+                }
+
+                @DeleteMapping(path = "/d")
+                public void deleteConById() {
+                }
+
+                @PatchMapping(path = "/f")
+                public void patchById() {}
+                }                
+
+            }
+            """,
+        encoding="utf-8",
+    )
+    controllers = count_controllers_in_directory(tmp_path)
+    assert controllers[0]["endpoints"] == [
+        {
+            "http_method": "GET",
+            "path": "/a",
+            "parameters": [ ],
+        },
+        {
+            "http_method": "POST",
+            "path": "/b",
+            "parameters": [ ],
+        },
+        {
+            "http_method": "PUT",
+            "path": "/c",
+            "parameters": [ ],
+        },
+        {
+            "http_method": "DELETE",
+            "path": "/d",
+            "parameters": [ ],
+        },
+        {
+            "http_method": "PATCH",
+            "path": "/f",
+            "parameters": [ ],
+        },
+    ]
+
+def test_count_controllers_in_directory_supports_static_import_request_methods(tmp_path):
+    (tmp_path / "MultiController2.java").write_text(
+        """
+            @RestController
+            @RequestMapping(path = "/api/cats")
+            class LargeCatController {
+                @RequestMapping(path = "/a", method = GET)
+                public List<Condition> getAllCond() {            }
+
+                @RequestMapping(path = "/b", method = POST)
+                public ResponseEntity<Cond> saveCon() {
+                }
+
+                @RequestMapping(path = "/c", method = PUT)
+                public Cond updateCon() {
+                }
+
+                @RequestMapping(path = "/d", method = DELETE)
+                public void deleteConById() {
+                }
+
+                @RequestMapping(path = "/e", method = PATCH)
+                public void patchById() {}
+                }                
+
+            }
+            """,
+        encoding="utf-8",
+    )
+    controllers = count_controllers_in_directory(tmp_path)
+    assert controllers[0]["endpoints"] == [
+        {"http_method": "GET", "path": "/a", "parameters": []},
+        {"http_method": "POST", "path": "/b", "parameters": []},
+        {"http_method": "PUT", "path": "/c", "parameters": []},
+        {"http_method": "DELETE", "path": "/d", "parameters": []},
+        {"http_method": "PATCH", "path": "/f", "parameters": []},
+    ]
+
+def test_count_controllers_in_directory_supports_multiple_paths_one_mapping(tmp_path):
+    (tmp_path / "MultiPathsController.java").write_text(
+        """
+        @Controller
+        class MultiPathsController {
+            // All the following are equivalent ways to define multiple paths
+            @GetMapping({"/cats", "/kittens"})
+            void method() { }
+            
+            @GetMapping(path = {"/cater", "/kiter"})
+            void list() {}
+            
+            @DeleteMapping(value = {"/c", "/k"})
+            void list() {}
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    controllers = count_controllers_in_directory(tmp_path)
+    assert controllers[0]["endpoints"] == [
+    {
+        "http_method": "GET",
+        "path": "/cats",
+        "parameters": [ ],
+    },
+    {
+        "http_method": "GET",
+        "path": "/kittens",
+        "parameters": [ ],
+    },
+    {
+        "http_method": "GET",
+        "path": "/cater",
+        "parameters": [ ],
+    },
+    {
+        "http_method": "GET",
+        "path": "/kiter",
+        "parameters": [ ],
+    },
+    {
+        "http_method": "DELETE",
+        "path": "/c",
+        "parameters": [ ],
+    },
+    {
+        "http_method": "DELETE",
+        "path": "/k",
+        "parameters": [ ],
+    },
+    ]
 
 def test_count_controllers_in_directory_supports_multiple_request_methods(tmp_path):
     (tmp_path / "MultiController.java").write_text(
