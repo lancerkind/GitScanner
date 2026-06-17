@@ -1,0 +1,7 @@
+from gitscanner import count_spring_controllers as legacy
+
+
+extract_parameter_name = legacy.extract_parameter_name
+extract_parameter_required = legacy.extract_parameter_required
+build_parameter_from_definition = legacy.build_parameter_from_definition
+extract_endpoint_parameters = legacy.extract_endpoint_parameters
