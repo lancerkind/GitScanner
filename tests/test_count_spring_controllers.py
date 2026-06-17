@@ -491,7 +491,7 @@ def test_count_controllers_in_directory_supports_static_import_request_methods(t
         {"http_method": "POST", "path": "/b", "parameters": []},
         {"http_method": "PUT", "path": "/c", "parameters": []},
         {"http_method": "DELETE", "path": "/d", "parameters": []},
-        {"http_method": "PATCH", "path": "/f", "parameters": []},
+        {"http_method": "PATCH", "path": "/e", "parameters": []},
     ]
 
 def test_count_controllers_in_directory_supports_multiple_paths_one_mapping(tmp_path):

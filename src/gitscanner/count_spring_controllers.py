@@ -36,13 +36,14 @@ HTTP_METHOD_BY_ANNOTATION = {
     "Patch": "PATCH",
 }
 MAPPING_ANNOTATION_PATTERN = re.compile(
-    r"@(?P<name>Get|Post|Put|Delete|Patch|Request)Mapping\s*\((?P<args>.*?)\)",
+    r"@(?P<name>Get|Post|Put|Delete|Patch|Request)Mapping(?:\s*\((?P<args>.*?)\))?",
     re.DOTALL,
 )
 PATH_NAMED_PATTERN = re.compile(r"\b(?:value|path)\s*=\s*\"([^\"]*)\"")
 PATH_ARRAY_PATTERN = re.compile(r"\b(?:value|path)\s*=\s*\{(?P<items>[^}]*)\}", re.DOTALL)
 STRING_LITERAL_PATTERN = re.compile(r'"([^\"]*)"')
 REQUEST_METHOD_PATTERN = re.compile(r"RequestMethod\.([A-Z]+)")
+STATIC_REQUEST_METHOD_PATTERN = re.compile(r"\bmethod\s*=\s*([A-Z]+)")
 SUPPORTED_PARAMETER_SOURCE_BY_ANNOTATION = {
     "PathVariable": "PATH",
     "RequestParam": "QUERY",
@@ -84,6 +85,13 @@ SCHEMA_STATEMENTS = (
         name        TEXT,
         base_path   TEXT,
         type        TEXT CHECK(type IN ('RestController', 'Controller'))
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS controller_base_paths (
+        id             INTEGER PRIMARY KEY,
+        controller_id  INTEGER NOT NULL REFERENCES controllers(id),
+        path           TEXT
     )
     """,
     """
@@ -296,9 +304,18 @@ def insert_repo(conn, scan_run_id, repo_name, url=None):
 
 def insert_controllers(conn, repo_id, controllers):
     for item in controllers:
+        base_path = item.get("base_path")
+        base_paths = [base_path]
+        if isinstance(base_path, list):
+            base_paths = base_path
+        db_base_path = base_paths[0] if base_paths else None
         cursor = conn.execute(
             "INSERT INTO controllers(repo_id, name, base_path, type) VALUES (?, ?, ?, ?)",
-            (repo_id, item["name"], item["base_path"], item["type"]),
+            (repo_id, item["name"], db_base_path, item["type"]),
+        )
+        conn.executemany(
+            "INSERT INTO controller_base_paths(controller_id, path) VALUES (?, ?)",
+            [(cursor.lastrowid, path) for path in base_paths],
         )
         insert_endpoints(conn, cursor.lastrowid, item.get("endpoints", []))
 
@@ -878,10 +895,20 @@ def extract_controller_mappings(content):
     if class_level_request_mapping:
         paths = extract_paths_from_annotation_args(class_level_request_mapping.group("args"))
         if paths:
-            base_path = paths[0]
+            non_null_paths = [path for path in paths if path is not None]
+            if len(non_null_paths) > 1:
+                base_path = non_null_paths
+            elif non_null_paths:
+                base_path = non_null_paths[0]
 
     endpoints = []
     for match in matches:
+        if match.group("args") is None:
+            next_index = match.end()
+            while next_index < len(content) and content[next_index].isspace():
+                next_index += 1
+            if next_index < len(content) and content[next_index] == "(":
+                continue
         if class_level_request_mapping and match.span() == class_level_request_mapping.span():
             continue
         mapping_endpoints = build_endpoints_from_annotation(match.group("name"), match.group("args"))
@@ -890,10 +917,27 @@ def extract_controller_mappings(content):
             endpoint["parameters"] = list(parameters)
         endpoints.extend(mapping_endpoints)
 
-    return base_path, endpoints
+    endpoints_by_method = defaultdict(list)
+    for endpoint in endpoints:
+        endpoints_by_method[endpoint["http_method"]].append(endpoint)
+
+    filtered_endpoints = []
+    for endpoint in endpoints:
+        if endpoint["path"] is not None:
+            filtered_endpoints.append(endpoint)
+            continue
+        method_endpoints = endpoints_by_method[endpoint["http_method"]]
+        has_path_specific_variant = any(item["path"] is not None for item in method_endpoints)
+        if not has_path_specific_variant:
+            filtered_endpoints.append(endpoint)
+
+    return base_path, filtered_endpoints
 
 
 def extract_paths_from_annotation_args(annotation_args):
+    if annotation_args is None:
+        return [None]
+
     array_match = PATH_ARRAY_PATTERN.search(annotation_args)
     if array_match:
         return [path for path in STRING_LITERAL_PATTERN.findall(array_match.group("items"))]
@@ -904,6 +948,8 @@ def extract_paths_from_annotation_args(annotation_args):
 
     stripped_args = annotation_args.strip()
     unnamed_paths = []
+    if stripped_args.startswith("{"):
+        unnamed_paths = STRING_LITERAL_PATTERN.findall(stripped_args)
     if stripped_args.startswith('"'):
         unnamed_paths = STRING_LITERAL_PATTERN.findall(stripped_args)
     if unnamed_paths:
@@ -915,7 +961,10 @@ def extract_paths_from_annotation_args(annotation_args):
 def build_endpoints_from_annotation(mapping_name, annotation_args):
     paths = extract_paths_from_annotation_args(annotation_args)
     if mapping_name == "Request":
-        methods = REQUEST_METHOD_PATTERN.findall(annotation_args) or ["ANY"]
+        methods = REQUEST_METHOD_PATTERN.findall(annotation_args or "")
+        if not methods:
+            methods = STATIC_REQUEST_METHOD_PATTERN.findall(annotation_args or "")
+        methods = methods or ["ANY"]
         return [
             {"http_method": method, "path": path}
             for path in paths
