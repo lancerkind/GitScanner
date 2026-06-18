@@ -18,9 +18,9 @@ dev = [
 ]
 
 # A build system must be defined in order for UV to install the project.scripts into the environment.
-# hatchling is one of the many tools that can create a package for this project so that the project.scripts
+# Hatchling is one of the many tools that can create a package for this project so project.scripts
 # can be installed.
-# This is necessary for the convenience of `uv run xyz`. Otherwise skip it and
+# This is necessary for the convenience of `uv run xyz`. Otherwise skip it.
 
 [build-system]
 requires = ["hatchling"]
