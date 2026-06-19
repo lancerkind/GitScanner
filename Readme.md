@@ -160,6 +160,43 @@ This schema is designed so the scanner focuses on collecting structured data, wh
 - Detailed, polished reporting will be built in a separate reporting tool that reads from the SQLite database.
 - You can also build your own custom reports directly from `gitscanner.db` using standard SQLite queries.
 
+## Running reports
+
+After scanning repositories, you can query `gitscanner.db` directly to generate reports.
+1. Run the scanner to populate data
+```bash
+uv run count_spring_controllers https://api.github.com github_repos.txt
+```
+2. Execute a report SQL file
+Use SQLite's `-init` option to run the bundled report query (`reporting/archetype_report.sql`):
+```bash
+sqlite3 gitscanner.db -init reporting/archetype_report.sql
+```
+
+## Build your own quick report
+
+Example: top repositories by number of controllers discovered.
+
+```bash
+sqlite3 gitscanner.db "SELECT repo_name, COUNT(*) AS controller_count FROM controllers GROUP BY repo_name ORDER BY controller_count DESC LIMIT 20;"
+```
+
+## Testing reporting
+
+Use `reporting/test_archetype_fixture.sql` to validate archetype reporting logic against known, synthetic data before running the report on production scan data.
+
+- The script creates a fresh test schema and seeds lookup/reference data.
+- It inserts one fixture repository per archetype scenario (for example: `MIXED`, `KAFKA`, `SPANNER`, `ORACLE`, `POSTGRES`, `OTHER_SQL`, `UPSTREAM_REST_API`, `NO_DEPENDENCIES_DETECTED`, `UNCLASSIFIED`).
+- It includes the archetype report query at the end so the result set is returned immediately.
+
+Run it against a test database:
+
+```bash
+sqlite3 reporting/test.db -init reporting/test_archetype_fixture.sql
+```
+
+Then visually verify that each fixture repo maps to the expected archetype (including the `repo-h2-only` case, which should remain `NO_DEPENDENCIES_DETECTED`).
+
 ## Managing Your Repository List
 
 **Add comments for organization:**
