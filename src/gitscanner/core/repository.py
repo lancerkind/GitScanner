@@ -2,15 +2,15 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from gitscanner.core import git
-
 
 @dataclass(frozen=True)
 class RepositoryCheckout:
     path: Path
     clone_url: str
+    cleanup_path: Optional[Path] = None
 
 
 class RepositoryClient:
@@ -24,4 +24,16 @@ class RepositoryClient:
             provider=provider,
             token=token,
         )
-        return RepositoryCheckout(path=Path(result["path"]), clone_url=result.get("clone_url") or "")
+        if "path" not in result:
+            raise RuntimeError(
+                f"Repository checkout for {repo_name} did not return a repository path. "
+                "Expected clone_and_count() to return a dictionary containing a 'path' key."
+            )
+
+        cleanup_path = result.get("cleanup_path")
+
+        return RepositoryCheckout(
+            path=Path(result["path"]),
+            clone_url=result.get("clone_url") or "",
+            cleanup_path=Path(cleanup_path) if cleanup_path else None,
+        )

@@ -9,7 +9,7 @@ dependencies = [
 
 [project.scripts]
 list_repos = "gitscanner.list_repos:main"
-count_spring_controllers = "gitscanner.count_spring_controllers:main"
+count_spring_controllers = "gitscanner.cli.count_spring_controllers:main"
 
 [dependency-groups]
 dev = [

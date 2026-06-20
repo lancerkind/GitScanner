@@ -88,7 +88,9 @@ The datasource type is determined from the URL value found in `application*.yml`
 
 ## Classification Pre-Seed Function
 
-All marker-to-type and URL-to-type mappings must live in a single dedicated function, called at startup. This function is the only place classifications are defined — it must be easy to extend as new markers are discovered across repos.
+All marker-to-type and URL-to-type mappings must live in a single dedicated function, called at startup. 
+This function is the only place classifications are defined — it must be easy to extend as new markers are 
+discovered across repos.
 
 ```python
 def get_default_classifications():

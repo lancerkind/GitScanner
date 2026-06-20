@@ -1,8 +1,8 @@
-import gitscanner.count_spring_controllers as facade
-from gitscanner import count_spring_controllers as package_facade
+from gitscanner.cli import count_spring_controllers as facade
+from gitscanner.core import git
 
 
 def test_compat_exports_are_available():
-    assert facade.parse_cli_args is package_facade.parse_cli_args
-    assert facade.process_repositories is package_facade.process_repositories
+    assert facade.build_github_headers() == git.build_github_headers()
+    assert facade.process_repositories is not None
     assert callable(facade.main)

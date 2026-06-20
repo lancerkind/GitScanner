@@ -1,4 +1,5 @@
 from typing import Iterable, List, Optional
+import shutil
 
 from gitscanner.core.models import ScanContext
 from gitscanner.core.scanner import RepoScanner
@@ -33,8 +34,12 @@ class ScanRunner:
                 provider=self.provider,
                 token=self.token,
             )
-            repo_id = self.store.insert_repo(scan_run_id, repo_name, checkout.clone_url)
-            context = ScanContext(repo_id=repo_id, repo_name=repo_name, repo_root=checkout.path)
-            for scanner in self.scanners:
-                self.store.save_scan_result(context, scanner.scan(context))
+            try:
+                repo_id = self.store.insert_repo(scan_run_id, repo_name, checkout.clone_url)
+                context = ScanContext(repo_id=repo_id, repo_name=repo_name, repo_root=checkout.path)
+                for scanner in self.scanners:
+                    self.store.save_scan_result(context, scanner.scan(context))
+            finally:
+                if getattr(checkout, "cleanup_path", None):
+                    shutil.rmtree(checkout.cleanup_path, ignore_errors=True)
         return scan_run_id, self.reporter.build_summary(scan_run_id)

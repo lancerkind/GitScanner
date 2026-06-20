@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def test_only_compat_tests_import_legacy_facade():
+def test_tests_do_not_import_legacy_facade():
     tests_dir = Path(__file__).parent
     forbidden = []
 
@@ -9,7 +9,7 @@ def test_only_compat_tests_import_legacy_facade():
     needle_package = 'from gitscanner import ' + 'count_spring_controllers'
 
     for path in tests_dir.glob('test_*.py'):
-        if path.name in {'test_compat_count_spring_controllers.py', 'test_architecture_guards.py'}:
+        if path.name == 'test_architecture_guards.py':
             continue
         text = path.read_text(encoding='utf-8')
         if needle_module in text or needle_package in text:

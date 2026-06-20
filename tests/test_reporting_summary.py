@@ -8,7 +8,7 @@ def test_summary_reporter_delegates_build_summary(monkeypatch):
         called['args'] = (conn, scan_run_id)
         return {'scan_run_id': scan_run_id}
 
-    monkeypatch.setattr('gitscanner.reporting.summary.legacy.build_summary_for_scan_run', fake_build_summary_for_scan_run)
+    monkeypatch.setattr('gitscanner.reporting.summary.build_summary_for_scan_run', fake_build_summary_for_scan_run)
 
     reporter = SummaryReporter(conn='db-conn')
     summary = reporter.build_summary(123)

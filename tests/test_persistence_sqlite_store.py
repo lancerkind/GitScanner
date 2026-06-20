@@ -9,7 +9,7 @@ def test_save_scan_result_dispatches_controller_records(monkeypatch):
     def fake_insert_controllers(conn, repo_id, records):
         captured['payload'] = (repo_id, records)
 
-    monkeypatch.setattr(sqlite_store.legacy, 'insert_controllers', fake_insert_controllers)
+    monkeypatch.setattr(sqlite_store, 'insert_controllers', fake_insert_controllers)
 
     store = SqliteStore(conn=object())
     context = ScanContext(repo_id=7, repo_name='repo', repo_root='unused')
@@ -26,7 +26,7 @@ def test_save_scan_result_dispatches_datasource_records(monkeypatch):
     def fake_insert_repo_datasources(conn, repo_id, records):
         captured['payload'] = (repo_id, records)
 
-    monkeypatch.setattr(sqlite_store.legacy, 'insert_repo_datasources', fake_insert_repo_datasources)
+    monkeypatch.setattr(sqlite_store, 'insert_repo_datasources', fake_insert_repo_datasources)
 
     store = SqliteStore(conn=object())
     context = ScanContext(repo_id=9, repo_name='repo', repo_root='unused')
