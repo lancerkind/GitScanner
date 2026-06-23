@@ -1,4 +1,4 @@
-"""Summary/reporting compatibility exports."""
+"""Summary/sql reports compatibility exports."""
 
 def build_summary_for_scan_run(conn, scan_run_id):
     total_repos_scanned = conn.execute(

@@ -42,4 +42,8 @@ class ScanRunner:
             finally:
                 if getattr(checkout, "cleanup_path", None):
                     shutil.rmtree(checkout.cleanup_path, ignore_errors=True)
+
+        if hasattr(self.store, "commit"):
+            self.store.commit()
+
         return scan_run_id, self.reporter.build_summary(scan_run_id)

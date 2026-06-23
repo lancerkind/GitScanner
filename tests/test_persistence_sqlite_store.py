@@ -36,3 +36,4 @@ def test_save_scan_result_dispatches_datasource_records(monkeypatch):
 
     assert captured['payload'][0] == 9
     assert captured['payload'][1][0]['url'].startswith('jdbc:')
+

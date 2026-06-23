@@ -12,6 +12,7 @@ class FakeRepositoryClient:
 class FakeStore:
     def __init__(self):
         self.saved = []
+        self.committed = False
 
     def initialize_database(self):
         self.initialized = True
@@ -25,6 +26,8 @@ class FakeStore:
     def save_scan_result(self, context, result):
         self.saved.append((context, result))
 
+    def commit(self):
+        self.committed = True
 
 class FakeReporter:
     def build_summary(self, scan_run_id):
@@ -50,3 +53,16 @@ def test_scan_runner_runs_pipeline_with_fake_collaborators():
 
     assert scan_run_id == 101
     assert summary['total_repos'] == 1
+
+def test_scan_runner_commits_after_successful_scan():
+    store = FakeStore()
+    runner = ScanRunner(
+        repository_client=FakeRepositoryClient(),
+        store=store,
+        scanners=[FakeScanner()],
+        reporter=FakeReporter(),
+    )
+
+    runner.run(['org/repo'])
+
+    assert store.committed is True

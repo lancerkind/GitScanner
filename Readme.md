@@ -170,7 +170,7 @@ uv run count_spring_controllers https://api.github.com github_repos.txt
 2. Execute a report SQL file
 Use SQLite's `-init` option to run the bundled report query (`reporting/archetype_report.sql`):
 ```bash
-sqlite3 gitscanner.db -init reporting/archetype_report.sql
+sqlite3 gitscanner.db -init sql reports/archetype_report.sql
 ```
 
 ## Build your own quick report
@@ -192,7 +192,7 @@ Use `reporting/test_archetype_fixture.sql` to validate archetype reporting logic
 Run it against a test database:
 
 ```bash
-sqlite3 reporting/test.db -init reporting/test_archetype_fixture.sql
+sqlite3 sql reports/test.db -init sql reports/test_archetype_fixture.sql
 ```
 
 Then visually verify that each fixture repo maps to the expected archetype (including the `repo-h2-only` case, which should remain `NO_DEPENDENCIES_DETECTED`).

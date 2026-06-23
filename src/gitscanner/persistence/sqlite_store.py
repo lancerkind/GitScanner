@@ -127,6 +127,9 @@ class SqliteStore:
     def insert_repo(self, scan_run_id, repo_name, url=None):
         return insert_repo(self.conn, scan_run_id, repo_name, url)
 
+    def commit(self):
+        self.conn.commit()
+
     def save_scan_result(self, context, result):
         capability = result.capability
         if capability == "springboot.controllers":
