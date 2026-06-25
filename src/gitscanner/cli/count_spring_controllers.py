@@ -54,9 +54,15 @@ class SpringDatasourceScannerCompat:
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Scan repositories for Spring controller data")
-    parser.add_argument("provider", nargs="?", default="github", choices=["github", "gitlab"])
-    parser.add_argument("api_base_url", nargs="?", default="https://api.github.com")
+    parser = argparse.ArgumentParser(description="Scan repositories for Spring controller data",
+         usage="count_spring_controllers.py <provider> <api_base_url> <repos_file> [--token] [--db-path]",
+         epilog="Environment variables: GITSCANNER_TOKEN.  Set to access token needed for access."
+         )
+    parser.add_argument("provider", nargs="?", default="github", choices=["github", "gitlab"],
+        help="Repository provider to query (choices: github, gitlab)")
+    parser.add_argument("api_base_url", nargs="?", default="https://api.github.com",
+        help="Base REST **API** URL (e.g., https://api.github.com or http://gitlab.com/api/v4)",
+        )
     parser.add_argument("repos_file", nargs="?", default="github_repos.txt")
     parser.add_argument("--token", dest="token", default=None)
     parser.add_argument("--db-path", dest="db_path", default=None)

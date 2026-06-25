@@ -104,13 +104,13 @@ def insert_controller_service(conn, controller_id, service_name, found):
 
 def insert_service_dependency_markers(conn, controller_service_id, markers):
     if not markers:
-        return
+        markers = ["NoDependency"]
     conn.executemany(
         """
         INSERT INTO service_dependency_markers(controller_service_id, marker)
         VALUES (?, ?)
         """,
-        [(controller_service_id, marker) for marker in sorted(markers)],
+        [(controller_service_id, marker) for marker in sorted(set(markers))],
     )
 
 

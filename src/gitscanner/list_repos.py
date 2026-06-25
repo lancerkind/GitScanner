@@ -153,7 +153,7 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="List repositories for a GitHub organization/user or GitLab namespace.",
         usage="list_repos <provider> <API_BASE_URL> <ORG> [--filter <substring>]",
-        epilog="Environment variables: GITSCANNER_TOKEN.",
+        epilog="Environment variables: GITSCANNER_TOKEN. Set to access token needed for access.",
     )
     parser.add_argument(
         "provider",
