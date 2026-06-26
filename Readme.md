@@ -3,7 +3,7 @@
 This project helps you:
 
 1. List repositories from GitHub or GitLab.
-2. Clone each repository and count Spring controller files (`@RestController` and `@Controller`).
+2. Count Spring controller files (`@RestController` and `@Controller`).
 
 Use `uv run` so commands execute through the project entry points defined in `pyproject.toml`.
 
@@ -245,6 +245,6 @@ personal-account/project-c
   ├─▶ client error (Connect)
   ╰─▶ invalid peer certificate: UnknownIssuer
   ```
-- I think you only have to do `export UV_NATIVE_TLS=true` and then your `uv sync` etc. will work.  This tells UV that
+- Run `export UV_NATIVE_TLS=true` and then your `uv sync` etc. will work.  This tells UV that
 it should use the Certificate Authorities in your MacOS keychain.  This is probably coming up due to corporate firewall.
 - If the above doesn't solve the problem, you may also need to install an SSL provider for python: `brew install openssl`
