@@ -32,8 +32,8 @@ from gitscanner.persistence.sqlite_store import SqliteStore, connect
 from gitscanner.reporting.summary import format_summary_lines
 from gitscanner.scanners.karate.features import KarateFeatureScanner
 from gitscanner.scanners.springboot.controllers import count_controllers_in_directory
-from gitscanner.scanners.springboot.datasources import collect_repo_datasources
-from gitscanner.scanners.springboot.services import SpringServiceDependencyScanner
+from gitscanner.scanners.springboot.datasources import collect_repo_datasources, SpringKafkaBindingScanner
+from gitscanner.scanners.springboot.services import SpringServiceDependencyScanner, SpringCloudStreamScanner
 
 
 DB_FILE_NAME = "gitscanner.db"
@@ -111,7 +111,9 @@ def process_repositories(
                 SpringControllerScannerCompat(),
                 KarateFeatureScanner(conn),
                 SpringDatasourceScannerCompat(),
+                SpringKafkaBindingScanner(),
                 SpringServiceDependencyScanner(conn),
+                SpringCloudStreamScanner(conn),
             ],
             reporter=store,
             api_base_url=api_base_url,

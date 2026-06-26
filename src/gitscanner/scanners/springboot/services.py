@@ -3,7 +3,11 @@ from collections import defaultdict
 from pathlib import Path
 
 from gitscanner.core.models import ScanResult
-from gitscanner.persistence.sqlite_store import insert_controller_service, insert_service_dependency_markers
+from gitscanner.persistence.sqlite_store import (
+    insert_controller_service,
+    insert_service_dependency_markers,
+    update_repo_kafka_binding_bean,
+)
 from gitscanner.scanners.springboot.controllers import split_top_level_commas
 
 
@@ -33,8 +37,7 @@ def extract_service_names_from_signature(signature):
             continue
         java_type = parts[-2]
         cleaned_type = java_type.replace("...", "")
-        if cleaned_type.endswith("Service"):
-            services.add(cleaned_type)
+        services.add(cleaned_type)
     return services
 
 
@@ -173,3 +176,56 @@ class SpringServiceDependencyScanner:
             capability=self.capability,
             records=scan_service_dependencies_for_repo(self.conn, context.repo_id, str(context.repo_root)),
         )
+
+
+class SpringCloudStreamScanner:
+    capability = "springboot.cloud_stream"
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def scan(self, context):
+        repo_id = context.repo_id
+        repo_root = str(context.repo_root)
+
+        # 1. Get bindings for this repo to know which beans to look for
+        bindings = self.conn.execute(
+            "SELECT binding_name FROM repo_kafka_bindings WHERE repo_id = ?",
+            (repo_id,)
+        ).fetchall()
+
+        if not bindings:
+            return ScanResult(capability=self.capability, records=[])
+
+        binding_names = {b[0] for b in bindings}
+        records = []
+
+        # 2. Scan Java files for @Bean methods
+        java_files = list(Path(repo_root).rglob("*.java"))
+
+        for java_file in java_files:
+            try:
+                content = java_file.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+
+            bean_methods = re.finditer(
+                r"@Bean\s+(?:public|protected|private|static|final|\s)*"
+                r"(Consumer|Function|Supplier)\s*<[^>]*>\s+"
+                r"(?P<method_name>[A-Za-z0-9_]+)\s*\((?P<params>[^)]*)\)",
+                content,
+                re.DOTALL
+            )
+
+            for match in bean_methods:
+                method_name = match.group("method_name")
+                params_str = match.group("params")
+
+                if method_name in binding_names:
+                    records.append({
+                        "binding_name": method_name,
+                        "bean_name": method_name,
+                        "injected_services": sorted(extract_service_names_from_signature(params_str))
+                    })
+
+        return ScanResult(capability=self.capability, records=records)

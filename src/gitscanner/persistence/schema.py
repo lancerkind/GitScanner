@@ -95,6 +95,15 @@ SCHEMA_STATEMENTS = (
         dependency_type TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS repo_kafka_bindings (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        repo_id       INTEGER NOT NULL REFERENCES repos(id),
+        binding_name  TEXT    NOT NULL,
+        direction     TEXT    NOT NULL CHECK(direction IN ('input', 'output')),
+        bean_name     TEXT    NULL
+    );
+    """,
 )
 
 
@@ -107,6 +116,7 @@ def get_default_classifications():
         ("SpannerRepository", "Spanner"),
         ("KafkaTemplate", "Kafka"),
         ("KafkaListener", "Kafka"),
+        ("kafka", "Kafka"),
         ("RestTemplate", "API"),
         ("WebClient", "API"),
         ("FeignClient", "API"),

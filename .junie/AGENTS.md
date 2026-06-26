@@ -1,5 +1,11 @@
 # GitScanner — Development Notes
 
+## Architectural principles
+- maintain separation of concerns
+- the scanner should just scan
+- the persistance code takes what is scanned and populates the database
+- sql_reports will generate reports from what's stored in the database
+
 ## Build / Configuration
 
 - Project uses a `src/` layout (`src/gitscanner`) and CLI entry points from `pyproject.toml`:
@@ -18,6 +24,9 @@ uv sync --dev
 ```
 
 ## Testing
+All new work coded in python should be driven with unit tests using the TDD method.
+At the end of implementing a task, check the code coverage.  If the code coverage goes below 80% then
+add more unit tests to get the coverage at 80% or more.
 
 ### Run tests
 
