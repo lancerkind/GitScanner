@@ -7,6 +7,11 @@ This project helps you:
 
 Use `uv run` so commands execute through the project entry points defined in `pyproject.toml`.
 
+## Precondition: If in Corporate Environment
+If `uv sync` errors out and you're behind a corporate firewall on MacOS, see the Troubleshooting section as you probably
+need to first tell uv how to perform TLS:
+`export UV_NATIVE_TLS=true`
+
 ## Using `list_repos`
 
 `list_repos` fetches repositories for an organization/group/user namespace and prints one repo per line.
@@ -68,17 +73,15 @@ uv run count_spring_controllers https://gitlab.company.com/api/v4 enterprise_rep
 
 ## Authentication
 
-- GitHub: set `GITHUB_TOKEN` for private repos/higher limits.
-- GitLab: set `GITLAB_TOKEN` for private repos/higher limits.
+For authentication with github and gitlab: set `GITSCANNER_TOKEN` for private repos/higher limits.
 
 Examples:
 
 ```bash
-export GITHUB_TOKEN="your_github_token"
-export GITLAB_TOKEN="your_gitlab_token"
+export GITSCANNER_TOKEN="your_github_token"
 ```
-
-For GitHub tokens, create one at: https://github.com/settings/tokens
+If you don't have an API token, for GitHub tokens, create one at: https://github.com/settings/tokens
+For GitLab, search online how to create one.
 
 ## Repository list file format
 
