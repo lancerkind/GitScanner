@@ -27,9 +27,17 @@ def insert_repo(conn, scan_run_id, repo_name, url=None):
 
 def insert_controllers(conn, repo_id, controllers):
     for controller in controllers:
+        base_path = controller.get("base_path")
+        if isinstance(base_path, list):
+            base_path = ",".join(str(p) for p in base_path if p is not None)
+        
+        type_val = controller.get("type")
+        if isinstance(type_val, list):
+            type_val = ",".join(str(t) for t in type_val if t is not None)
+
         cursor = conn.execute(
             "INSERT INTO controllers(repo_id, name, base_path, type) VALUES (?, ?, ?, ?)",
-            (repo_id, controller["name"], controller.get("base_path"), controller["type"]),
+            (repo_id, controller["name"], base_path, type_val),
         )
         controller_id = cursor.lastrowid
         insert_endpoints(conn, controller_id, controller.get("endpoints", []))

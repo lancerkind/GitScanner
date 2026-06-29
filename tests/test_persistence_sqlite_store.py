@@ -155,3 +155,40 @@ def test_insert_repo_karate_data_cleanup():
     pcount = conn.execute("SELECT COUNT(*) FROM karate_paths").fetchone()[0]
     assert pcount == 0
 
+
+def test_insert_controllers_handles_list_base_path():
+    conn = sqlite3.connect(":memory:")
+    for stmt in SCHEMA_STATEMENTS:
+        conn.execute(stmt)
+    repo_id = 1
+    conn.execute("INSERT INTO repos (id, name) VALUES (?, ?)", (repo_id, "test"))
+
+    controllers = [{
+        "name": "MultiPathController",
+        "type": "RestController",
+        "base_path": ["/api/v1", "/api/v2"],
+        "endpoints": []
+    }]
+
+    sqlite_store.insert_controllers(conn, repo_id, controllers)
+    row = conn.execute("SELECT base_path FROM controllers").fetchone()
+    assert row[0] == "/api/v1,/api/v2"
+
+
+def test_insert_controllers_handles_list_type():
+    conn = sqlite3.connect(":memory:")
+    # We use a custom table without CHECK constraint for this test
+    conn.execute("CREATE TABLE controllers (repo_id INTEGER, name TEXT, base_path TEXT, type TEXT)")
+    repo_id = 1
+
+    controllers = [{
+        "name": "MultiTypeController",
+        "type": ["RestController", "Controller"],
+        "base_path": "/api",
+        "endpoints": []
+    }]
+
+    sqlite_store.insert_controllers(conn, repo_id, controllers)
+    row = conn.execute("SELECT type FROM controllers").fetchone()
+    assert row[0] == "RestController,Controller"
+
